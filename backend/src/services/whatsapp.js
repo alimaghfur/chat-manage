@@ -25,7 +25,7 @@ async function createSession(sessionId, io) {
 
   const sock = makeWASocket({
     auth: state,
-    printQRInTerminal: false,
+    printQRInTerminal: true,
     logger: pino({ level: 'silent' }),
     browser: ['Chat Manager', 'Chrome', '120.0.0'],
   });

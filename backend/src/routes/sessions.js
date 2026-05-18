@@ -73,8 +73,13 @@ router.post('/:id/connect', async (req, res) => {
     const io = req.app.get('io');
     
     console.log(`🔄 Starting connection for session: ${id}`);
-    await createSession(id, io);
-    console.log(`✅ createSession called for: ${id}`);
+    
+    // Don't await - createSession runs in background and emits QR via socket
+    createSession(id, io).then(() => {
+      console.log(`✅ createSession resolved for: ${id}`);
+    }).catch((err) => {
+      console.error(`❌ createSession error for ${id}:`, err.message);
+    });
 
     res.json({ message: 'Session connecting, check QR code' });
   } catch (error) {
