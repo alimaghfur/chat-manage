@@ -38,9 +38,9 @@ async function createSession(sessionId, io) {
   console.log(`[WA] Creating socket for session: ${sessionId}`);
   const sock = makeWASocket({
     auth: state,
-    printQRInTerminal: true,
     logger: pino({ level: 'silent' }),
-    browser: ['Chat Manager', 'Chrome', '120.0.0'],
+    browser: ['Chat Manager', 'Chrome', '131.0.0'],
+    syncFullHistory: false,
   });
 
   console.log(`[WA] Socket created, registering event listeners for: ${sessionId}`);
@@ -72,7 +72,7 @@ async function createSession(sessionId, io) {
 
     if (connection === 'close') {
       const statusCode = (lastDisconnect?.error)?.output?.statusCode;
-      const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+      const shouldReconnect = statusCode !== DisconnectReason.loggedOut && statusCode !== 405;
 
       console.log(`[WA] Connection closed for ${sessionId}, statusCode: ${statusCode}, shouldReconnect: ${shouldReconnect}`);
 
