@@ -1,0 +1,28 @@
+{
+  "name": "chat-manage-backend",
+  "version": "1.0.0",
+  "description": "WhatsApp Chat Management - Backend",
+  "main": "src/index.js",
+  "scripts": {
+    "dev": "nodemon src/index.js",
+    "start": "node src/index.js",
+    "db:migrate": "prisma migrate dev",
+    "db:generate": "prisma generate",
+    "db:seed": "node prisma/seed.js"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.7.9",
+    "@prisma/client": "^5.22.0",
+    "express": "^4.21.1",
+    "cors": "^2.8.5",
+    "socket.io": "^4.8.1",
+    "qrcode": "^1.5.4",
+    "pino": "^9.5.0",
+    "dotenv": "^16.4.5",
+    "multer": "^1.4.5-lts.1"
+  },
+  "devDependencies": {
+    "prisma": "^5.22.0",
+    "nodemon": "^3.1.7"
+  }
+}
