@@ -1,5 +1,4 @@
-const { default: makeWASocket, DisconnectReason, useMultiFileAuthState, makeInMemoryStore } = require('@whiskeysockets/baileys');
-const { Boom } = require('@hapi/boom');
+const { default: makeWASocket, DisconnectReason, useMultiFileAuthState } = require('@whiskeysockets/baileys');
 const pino = require('pino');
 const path = require('path');
 const fs = require('fs');
@@ -7,7 +6,7 @@ const QRCode = require('qrcode');
 const { PrismaClient } = require('@prisma/client');
 
 const prisma = new PrismaClient();
-const sessions = new Map(); // sessionId -> { socket, store }
+const sessions = new Map(); // sessionId -> { socket }
 
 const SESSIONS_DIR = path.join(__dirname, '../../sessions');
 
@@ -24,18 +23,12 @@ async function createSession(sessionId, io) {
 
   const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
 
-  const store = makeInMemoryStore({
-    logger: pino({ level: 'silent' }),
-  });
-
   const sock = makeWASocket({
     auth: state,
     printQRInTerminal: false,
     logger: pino({ level: 'silent' }),
     browser: ['Chat Manager', 'Chrome', '120.0.0'],
   });
-
-  store.bind(sock.ev);
 
   // Handle connection updates
   sock.ev.on('connection.update', async (update) => {
@@ -178,7 +171,7 @@ async function createSession(sessionId, io) {
     }
   });
 
-  sessions.set(sessionId, { sock, store });
+  sessions.set(sessionId, { sock });
   return sock;
 }
 
