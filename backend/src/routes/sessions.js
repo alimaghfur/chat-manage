@@ -63,6 +63,21 @@ router.post('/', async (req, res) => {
   }
 });
 
+// Get QR code for a session (polling fallback)
+router.get('/:id/qr', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const session = await prisma.session.findUnique({
+      where: { id },
+      select: { qrCode: true, status: true },
+    });
+    if (!session) return res.status(404).json({ error: 'Session not found' });
+    res.json({ qr: session.qrCode, status: session.status });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Connect session (start WhatsApp connection)
 router.post('/:id/connect', async (req, res) => {
   try {

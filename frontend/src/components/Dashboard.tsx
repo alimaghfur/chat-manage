@@ -23,10 +23,10 @@ export default function Dashboard({ activeSessionId, setActiveSessionId }: Dashb
 
     const socket = getSocket();
     
-    // Listen for QR code - use callback to always get latest connectingId
+    // Listen for QR code
     const handleQr = ({ sessionId, qr }: { sessionId: string; qr: string }) => {
       setConnectingId((currentId) => {
-        if (sessionId === currentId) {
+        if (sessionId === currentId || currentId) {
           setQrCode(qr);
         }
         return currentId;
@@ -80,21 +80,59 @@ export default function Dashboard({ activeSessionId, setActiveSessionId }: Dashb
       setConnectingId(id);
       setQrCode(null);
       
-      // Join socket room FIRST, then call connect API
+      // Join socket room
       const socket = getSocket();
       socket.emit('join-session', id);
       
-      // Small delay to ensure room is joined before backend emits QR
-      await new Promise((resolve) => setTimeout(resolve, 300));
-      
+      // Call connect API
       await sessionsApi.connect(id);
       setSessions((prev) =>
         prev.map((s) => (s.id === id ? { ...s, status: 'connecting' } : s))
       );
+
+      // Start polling for QR as fallback (in case socket misses it)
+      pollForQr(id);
     } catch (error) {
       console.error('Failed to connect:', error);
       alert('Gagal connect: ' + (error as Error).message);
       setConnectingId(null);
+    }
+  }
+
+  async function pollForQr(id: string) {
+    // Poll every 2 seconds for up to 30 seconds
+    for (let i = 0; i < 15; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      
+      // Stop polling if we already have QR or no longer connecting
+      let shouldStop = false;
+      setQrCode((current) => { 
+        if (current) shouldStop = true;
+        return current;
+      });
+      setConnectingId((current) => {
+        if (current !== id) shouldStop = true;
+        return current;
+      });
+      if (shouldStop) return;
+
+      try {
+        const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001/api'}/sessions/${id}/qr`);
+        const data = await res.json();
+        
+        if (data.qr) {
+          setQrCode(data.qr);
+          return;
+        }
+        if (data.status === 'connected') {
+          setQrCode(null);
+          setConnectingId(null);
+          loadSessions();
+          return;
+        }
+      } catch (e) {
+        // ignore polling errors
+      }
     }
   }
 

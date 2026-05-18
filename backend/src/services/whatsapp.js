@@ -6,7 +6,7 @@ const QRCode = require('qrcode');
 const { PrismaClient } = require('@prisma/client');
 
 const prisma = new PrismaClient();
-const sessions = new Map(); // sessionId -> { socket }
+const sessions = new Map(); // sessionId -> { sock }
 
 const SESSIONS_DIR = path.join(__dirname, '../../sessions');
 
@@ -16,13 +16,26 @@ if (!fs.existsSync(SESSIONS_DIR)) {
 }
 
 async function createSession(sessionId, io) {
+  // If session already exists, disconnect first
+  if (sessions.has(sessionId)) {
+    try {
+      const existing = sessions.get(sessionId);
+      existing.sock.ev.removeAllListeners();
+      sessions.delete(sessionId);
+    } catch (e) {
+      // ignore
+    }
+  }
+
   const sessionDir = path.join(SESSIONS_DIR, sessionId);
   if (!fs.existsSync(sessionDir)) {
     fs.mkdirSync(sessionDir, { recursive: true });
   }
 
+  console.log(`[WA] Loading auth state for session: ${sessionId}`);
   const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
 
+  console.log(`[WA] Creating socket for session: ${sessionId}`);
   const sock = makeWASocket({
     auth: state,
     printQRInTerminal: true,
@@ -30,39 +43,52 @@ async function createSession(sessionId, io) {
     browser: ['Chat Manager', 'Chrome', '120.0.0'],
   });
 
+  console.log(`[WA] Socket created, registering event listeners for: ${sessionId}`);
+
   // Handle connection updates
   sock.ev.on('connection.update', async (update) => {
     const { connection, lastDisconnect, qr } = update;
 
+    console.log(`[WA] connection.update for ${sessionId}:`, { connection, hasQr: !!qr });
+
     if (qr) {
-      // Generate QR code as data URL
-      console.log(`📱 QR Code generated for session: ${sessionId}`);
-      const qrDataUrl = await QRCode.toDataURL(qr);
-      await prisma.session.update({
-        where: { id: sessionId },
-        data: { qrCode: qrDataUrl, status: 'connecting' },
-      });
-      io.to(`session-${sessionId}`).emit('qr-code', { sessionId, qr: qrDataUrl });
-      console.log(`📤 QR Code emitted to room: session-${sessionId}`);
+      try {
+        console.log(`[WA] QR Code received for session: ${sessionId}`);
+        const qrDataUrl = await QRCode.toDataURL(qr);
+        
+        // Save to DB
+        await prisma.session.update({
+          where: { id: sessionId },
+          data: { qrCode: qrDataUrl, status: 'connecting' },
+        });
+
+        // Emit via socket
+        io.emit('qr-code', { sessionId, qr: qrDataUrl });
+        console.log(`[WA] QR Code emitted globally for session: ${sessionId}`);
+      } catch (err) {
+        console.error(`[WA] Error processing QR for ${sessionId}:`, err.message);
+      }
     }
 
     if (connection === 'close') {
       const statusCode = (lastDisconnect?.error)?.output?.statusCode;
       const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
 
-      await prisma.session.update({
-        where: { id: sessionId },
-        data: { status: 'disconnected', qrCode: null },
-      });
-      io.to(`session-${sessionId}`).emit('session-status', { sessionId, status: 'disconnected' });
+      console.log(`[WA] Connection closed for ${sessionId}, statusCode: ${statusCode}, shouldReconnect: ${shouldReconnect}`);
+
+      try {
+        await prisma.session.update({
+          where: { id: sessionId },
+          data: { status: 'disconnected', qrCode: null },
+        });
+      } catch (e) {}
+
+      io.emit('session-status', { sessionId, status: 'disconnected' });
 
       if (shouldReconnect) {
-        // Reconnect after a short delay
         setTimeout(() => createSession(sessionId, io), 3000);
       } else {
-        // Session logged out, clean up
         sessions.delete(sessionId);
-        // Remove auth files
         if (fs.existsSync(sessionDir)) {
           fs.rmSync(sessionDir, { recursive: true });
         }
@@ -71,16 +97,20 @@ async function createSession(sessionId, io) {
 
     if (connection === 'open') {
       const user = sock.user;
-      await prisma.session.update({
-        where: { id: sessionId },
-        data: {
-          status: 'connected',
-          qrCode: null,
-          phone: user?.id?.split(':')[0] || null,
-        },
-      });
-      io.to(`session-${sessionId}`).emit('session-status', { sessionId, status: 'connected' });
-      console.log(`✅ Session ${sessionId} connected as ${user?.id}`);
+      console.log(`[WA] ✅ Session ${sessionId} connected as ${user?.id}`);
+
+      try {
+        await prisma.session.update({
+          where: { id: sessionId },
+          data: {
+            status: 'connected',
+            qrCode: null,
+            phone: user?.id?.split(':')[0] || null,
+          },
+        });
+      } catch (e) {}
+
+      io.emit('session-status', { sessionId, status: 'connected' });
     }
   });
 
@@ -95,7 +125,7 @@ async function createSession(sessionId, io) {
       if (!msg.message) continue;
 
       const jid = msg.key.remoteJid;
-      if (jid === 'status@broadcast') continue; // Skip status updates
+      if (jid === 'status@broadcast') continue;
 
       const fromMe = msg.key.fromMe || false;
       const content = extractMessageContent(msg);
@@ -103,20 +133,12 @@ async function createSession(sessionId, io) {
       const pushName = msg.pushName || null;
 
       try {
-        // Upsert contact
         let contact = await prisma.contact.upsert({
           where: { sessionId_jid: { sessionId, jid } },
           update: { pushName: pushName || undefined },
-          create: {
-            sessionId,
-            jid,
-            phone,
-            pushName,
-            name: pushName,
-          },
+          create: { sessionId, jid, phone, pushName, name: pushName },
         });
 
-        // Save message
         const savedMsg = await prisma.message.create({
           data: {
             sessionId,
@@ -131,18 +153,13 @@ async function createSession(sessionId, io) {
           },
         });
 
-        // Emit to frontend
-        io.to(`session-${sessionId}`).emit('new-message', {
-          ...savedMsg,
-          contact,
-        });
+        io.emit('new-message', { ...savedMsg, contact });
 
-        // Check auto-replies (only for incoming messages)
         if (!fromMe && content) {
           await handleAutoReply(sessionId, jid, content, sock);
         }
       } catch (error) {
-        console.error('Error processing message:', error);
+        console.error('Error processing message:', error.message);
       }
     }
   });
@@ -159,19 +176,15 @@ async function createSession(sessionId, io) {
               where: { messageId: update.key.id },
               data: { status },
             });
-            io.to(`session-${sessionId}`).emit('message-status', {
-              messageId: update.key.id,
-              status,
-            });
-          } catch (error) {
-            // Message might not exist in DB
-          }
+            io.emit('message-status', { messageId: update.key.id, status });
+          } catch (error) {}
         }
       }
     }
   });
 
   sessions.set(sessionId, { sock });
+  console.log(`[WA] Session ${sessionId} stored, waiting for QR...`);
   return sock;
 }
 
@@ -230,11 +243,11 @@ async function handleAutoReply(sessionId, jid, content, sock) {
 
       if (matched) {
         await sock.sendMessage(jid, { text: rule.response });
-        break; // Only send one auto-reply per message
+        break;
       }
     }
   } catch (error) {
-    console.error('Auto-reply error:', error);
+    console.error('Auto-reply error:', error.message);
   }
 }
 
@@ -264,7 +277,9 @@ async function sendMessage(sessionId, jid, content, type = 'text') {
 async function disconnectSession(sessionId) {
   const session = sessions.get(sessionId);
   if (session) {
-    await session.sock.logout();
+    try {
+      await session.sock.logout();
+    } catch (e) {}
     sessions.delete(sessionId);
   }
 }
