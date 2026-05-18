@@ -1,18 +1,19 @@
 function initializeSocket(io) {
   io.on('connection', (socket) => {
-    console.log('Client connected:', socket.id);
+    console.log('🔌 Client connected:', socket.id);
 
     socket.on('join-session', (sessionId) => {
       socket.join(`session-${sessionId}`);
-      console.log(`Socket ${socket.id} joined session-${sessionId}`);
+      console.log(`📎 Socket ${socket.id} joined room: session-${sessionId}`);
     });
 
     socket.on('leave-session', (sessionId) => {
       socket.leave(`session-${sessionId}`);
+      console.log(`📎 Socket ${socket.id} left room: session-${sessionId}`);
     });
 
     socket.on('disconnect', () => {
-      console.log('Client disconnected:', socket.id);
+      console.log('🔌 Client disconnected:', socket.id);
     });
   });
 }

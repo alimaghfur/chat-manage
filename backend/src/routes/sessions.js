@@ -71,10 +71,14 @@ router.post('/:id/connect', async (req, res) => {
     if (!session) return res.status(404).json({ error: 'Session not found' });
 
     const io = req.app.get('io');
+    
+    console.log(`🔄 Starting connection for session: ${id}`);
     await createSession(id, io);
+    console.log(`✅ createSession called for: ${id}`);
 
     res.json({ message: 'Session connecting, check QR code' });
   } catch (error) {
+    console.error('❌ Connect error:', error);
     res.status(500).json({ error: error.message });
   }
 });

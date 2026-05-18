@@ -43,12 +43,14 @@ async function createSession(sessionId, io) {
 
     if (qr) {
       // Generate QR code as data URL
+      console.log(`📱 QR Code generated for session: ${sessionId}`);
       const qrDataUrl = await QRCode.toDataURL(qr);
       await prisma.session.update({
         where: { id: sessionId },
         data: { qrCode: qrDataUrl, status: 'connecting' },
       });
       io.to(`session-${sessionId}`).emit('qr-code', { sessionId, qr: qrDataUrl });
+      console.log(`📤 QR Code emitted to room: session-${sessionId}`);
     }
 
     if (connection === 'close') {

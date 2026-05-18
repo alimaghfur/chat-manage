@@ -22,12 +22,18 @@ export default function Dashboard({ activeSessionId, setActiveSessionId }: Dashb
     loadSessions();
 
     const socket = getSocket();
-    socket.on('qr-code', ({ sessionId, qr }) => {
-      if (sessionId === connectingId) {
-        setQrCode(qr);
-      }
-    });
-    socket.on('session-status', ({ sessionId, status }) => {
+    
+    // Listen for QR code - use callback to always get latest connectingId
+    const handleQr = ({ sessionId, qr }: { sessionId: string; qr: string }) => {
+      setConnectingId((currentId) => {
+        if (sessionId === currentId) {
+          setQrCode(qr);
+        }
+        return currentId;
+      });
+    };
+
+    const handleStatus = ({ sessionId, status }: { sessionId: string; status: string }) => {
       setSessions((prev) =>
         prev.map((s) => (s.id === sessionId ? { ...s, status, qrCode: null } : s))
       );
@@ -35,13 +41,16 @@ export default function Dashboard({ activeSessionId, setActiveSessionId }: Dashb
         setQrCode(null);
         setConnectingId(null);
       }
-    });
+    };
+
+    socket.on('qr-code', handleQr);
+    socket.on('session-status', handleStatus);
 
     return () => {
-      socket.off('qr-code');
-      socket.off('session-status');
+      socket.off('qr-code', handleQr);
+      socket.off('session-status', handleStatus);
     };
-  }, [connectingId]);
+  }, []);
 
   async function loadSessions() {
     try {
@@ -70,13 +79,21 @@ export default function Dashboard({ activeSessionId, setActiveSessionId }: Dashb
     try {
       setConnectingId(id);
       setQrCode(null);
-      joinSession(id);
+      
+      // Join socket room FIRST, then call connect API
+      const socket = getSocket();
+      socket.emit('join-session', id);
+      
+      // Small delay to ensure room is joined before backend emits QR
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      
       await sessionsApi.connect(id);
       setSessions((prev) =>
         prev.map((s) => (s.id === id ? { ...s, status: 'connecting' } : s))
       );
     } catch (error) {
       console.error('Failed to connect:', error);
+      alert('Gagal connect: ' + (error as Error).message);
       setConnectingId(null);
     }
   }
@@ -196,19 +213,27 @@ export default function Dashboard({ activeSessionId, setActiveSessionId }: Dashb
       )}
 
       {/* QR Code Modal */}
-      {qrCode && connectingId && (
+      {connectingId && (
         <div className="modal-overlay" onClick={() => { setQrCode(null); setConnectingId(null); }}>
           <div className="modal-content w-full max-w-sm mx-4 p-6 text-center" onClick={(e) => e.stopPropagation()}>
             <div className="w-12 h-12 rounded-full bg-[#00A884]/10 flex items-center justify-center mx-auto mb-4">
               <QrIcon className="w-6 h-6 text-[#00A884]" />
             </div>
-            <h3 className="text-lg font-semibold text-[#E9EDEF] mb-1">Scan QR Code</h3>
+            <h3 className="text-lg font-semibold text-[#E9EDEF] mb-1">
+              {qrCode ? 'Scan QR Code' : 'Menunggu QR Code...'}
+            </h3>
             <p className="text-[#8696A0] text-xs mb-5">
               Buka WhatsApp di HP → Menu → Linked Devices → Link a Device
             </p>
-            <div className="bg-white rounded-xl p-3 inline-block mb-5">
-              <img src={qrCode} alt="QR Code" className="w-56 h-56" />
-            </div>
+            {qrCode ? (
+              <div className="bg-white rounded-xl p-3 inline-block mb-5">
+                <img src={qrCode} alt="QR Code" className="w-56 h-56" />
+              </div>
+            ) : (
+              <div className="flex items-center justify-center mb-5 py-10">
+                <div className="w-10 h-10 border-4 border-[#2A3942] border-t-[#00A884] rounded-full animate-spin"></div>
+              </div>
+            )}
             <div>
               <button
                 onClick={() => { setQrCode(null); setConnectingId(null); }}
