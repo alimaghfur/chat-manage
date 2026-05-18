@@ -3,7 +3,7 @@ import './globals.css';
 
 export const metadata: Metadata = {
   title: 'WhatsApp Chat Manager',
-  description: 'Manage your WhatsApp conversations',
+  description: 'Professional WhatsApp Chat Management Application',
 };
 
 export default function RootLayout({
@@ -12,8 +12,8 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en">
-      <body className="min-h-screen bg-gray-100">{children}</body>
+    <html lang="id">
+      <body className="min-h-screen bg-[#0B141A] antialiased">{children}</body>
     </html>
   );
 }

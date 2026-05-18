@@ -3,38 +3,152 @@
 @tailwind utilities;
 
 :root {
-  --foreground-rgb: 0, 0, 0;
-  --background-start-rgb: 214, 219, 220;
-  --background-end-rgb: 255, 255, 255;
+  --wa-green: #25D366;
+  --wa-dark: #111B21;
+  --wa-darker: #0B141A;
+  --wa-light-green: #DCF8C6;
+  --wa-teal: #00A884;
+  --wa-bg: #0B141A;
+  --wa-chat-bg: #0B141A;
+  --wa-panel: #202C33;
+  --wa-hover: #2A3942;
+  --wa-border: #2A3942;
+  --wa-text: #E9EDEF;
+  --wa-text-secondary: #8696A0;
+  --wa-bubble-out: #005C4B;
+  --wa-bubble-in: #202C33;
+  --wa-header: #202C33;
+  --wa-input: #2A3942;
+  --wa-search: #202C33;
 }
 
-body {
-  color: rgb(var(--foreground-rgb));
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(134, 150, 160, 0.3) transparent;
 }
 
-/* Custom scrollbar */
 ::-webkit-scrollbar {
   width: 6px;
 }
 
 ::-webkit-scrollbar-track {
-  background: #f1f1f1;
+  background: transparent;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #888;
+  background: rgba(134, 150, 160, 0.3);
   border-radius: 3px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #555;
+  background: rgba(134, 150, 160, 0.5);
 }
 
-/* Chat bubble styles */
+body {
+  font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+  background: var(--wa-darker);
+  color: var(--wa-text);
+  overflow: hidden;
+}
+
+/* Animations */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes slideInLeft {
+  from { opacity: 0; transform: translateX(-20px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes slideInRight {
+  from { opacity: 0; transform: translateX(20px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes scaleIn {
+  from { opacity: 0; transform: scale(0.95); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.animate-fadeIn {
+  animation: fadeIn 0.3s ease-out;
+}
+
+.animate-slideInLeft {
+  animation: slideInLeft 0.3s ease-out;
+}
+
+.animate-slideInRight {
+  animation: slideInRight 0.3s ease-out;
+}
+
+.animate-scaleIn {
+  animation: scaleIn 0.2s ease-out;
+}
+
+.animate-pulse-dot {
+  animation: pulse-dot 2s ease-in-out infinite;
+}
+
+/* Chat bubbles */
 .chat-bubble-sent {
-  @apply bg-wa-light rounded-lg rounded-tr-none px-3 py-2 max-w-[70%] ml-auto;
+  @apply relative px-3 py-2 max-w-[65%] ml-auto rounded-lg rounded-tr-sm;
+  background: var(--wa-bubble-out);
+  color: var(--wa-text);
 }
 
 .chat-bubble-received {
-  @apply bg-white rounded-lg rounded-tl-none px-3 py-2 max-w-[70%];
+  @apply relative px-3 py-2 max-w-[65%] rounded-lg rounded-tl-sm;
+  background: var(--wa-bubble-in);
+  color: var(--wa-text);
+}
+
+/* Chat background pattern */
+.chat-bg-pattern {
+  background-color: #0B141A;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='80' height='80' viewBox='0 0 80 80'%3E%3Cg fill='%23ffffff' fill-opacity='0.02'%3E%3Cpath d='M0 0h40v40H0V0zm40 40h40v40H40V40zm0-40h2l-2 2V0zm0 4l4-4h2l-6 6V4zm0 4l8-8h2L40 10V8zm0 4L52 0h2L40 14v-2zm0 4L56 0h2L40 18v-2zm0 4L60 0h2L40 22v-2zm0 4L64 0h2L40 26v-2zm0 4L68 0h2L40 30v-2zm0 4L72 0h2L40 34v-2zm0 4L76 0h2L40 38v-2zm0 4L80 0v2L42 40h-2zm4 0L80 4v2L46 40h-2zm4 0L80 8v2L50 40h-2zm4 0l28-28v2L54 40h-2zm4 0l24-24v2L58 40h-2zm4 0l20-20v2L62 40h-2zm4 0l16-16v2L66 40h-2zm4 0l12-12v2L70 40h-2zm4 0l8-8v2l-6 6h-2zm4 0l4-4v2l-2 2h-2z'/%3E%3C/g%3E%3C/svg%3E");
+}
+
+/* Toggle switch */
+.toggle-switch {
+  @apply relative inline-flex h-6 w-11 items-center rounded-full transition-colors cursor-pointer;
+}
+
+.toggle-switch-dot {
+  @apply inline-block h-4 w-4 transform rounded-full bg-white transition-transform shadow-sm;
+}
+
+/* Modal overlay */
+.modal-overlay {
+  @apply fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50;
+}
+
+.modal-content {
+  @apply bg-[#202C33] rounded-xl border border-[#2A3942] shadow-2xl;
+  animation: scaleIn 0.2s ease-out;
+}
+
+/* Status indicator */
+.status-dot {
+  @apply w-2.5 h-2.5 rounded-full;
+}
+
+.status-dot-connected {
+  @apply bg-emerald-400;
+  box-shadow: 0 0 6px rgba(52, 211, 153, 0.5);
+}
+
+.status-dot-connecting {
+  @apply bg-amber-400 animate-pulse-dot;
+}
+
+.status-dot-disconnected {
+  @apply bg-red-400;
 }
