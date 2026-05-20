@@ -100,14 +100,21 @@ async function createSession(sessionId, io, options = {}) {
     const { connection, lastDisconnect, qr } = update;
 
     if (qr && !usePairingCode) {
-      // Emit QR code for scanning
-      io.to(`session:${sessionId}`).emit('qr', { sessionId, qr });
+      // Convert QR string to data URL image
+      const QRCode = require('qrcode');
+      try {
+        const qrDataUrl = await QRCode.toDataURL(qr);
+        // Emit QR code as image for scanning
+        io.to(`session:${sessionId}`).emit('qr', { sessionId, qr: qrDataUrl });
 
-      // Update session in DB
-      await prisma.session.update({
-        where: { id: sessionId },
-        data: { qrCode: qr, status: 'connecting' },
-      }).catch(() => {});
+        // Update session in DB
+        await prisma.session.update({
+          where: { id: sessionId },
+          data: { qrCode: qrDataUrl, status: 'connecting' },
+        }).catch(() => {});
+      } catch (err) {
+        console.error(`Failed to generate QR image for ${sessionId}:`, err.message);
+      }
     }
 
     if (connection === 'open') {
