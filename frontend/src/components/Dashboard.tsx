@@ -17,6 +17,10 @@ export default function Dashboard({ activeSessionId, setActiveSessionId }: Dashb
   const [loading, setLoading] = useState(false);
   const [qrCode, setQrCode] = useState<string | null>(null);
   const [connectingId, setConnectingId] = useState<string | null>(null);
+  const [pairingCode, setPairingCode] = useState<string | null>(null);
+  const [showPhoneInput, setShowPhoneInput] = useState(false);
+  const [phoneForPairing, setPhoneForPairing] = useState('');
+  const [pairingSessionId, setPairingSessionId] = useState<string | null>(null);
 
   useEffect(() => {
     loadSessions();
@@ -46,9 +50,16 @@ export default function Dashboard({ activeSessionId, setActiveSessionId }: Dashb
     socket.on('qr-code', handleQr);
     socket.on('session-status', handleStatus);
 
+    const handlePairingCode = ({ sessionId, code }: { sessionId: string; code: string }) => {
+      setPairingCode(code);
+      setConnectingId(sessionId);
+    };
+    socket.on('pairing-code', handlePairingCode);
+
     return () => {
       socket.off('qr-code', handleQr);
       socket.off('session-status', handleStatus);
+      socket.off('pairing-code', handlePairingCode);
     };
   }, []);
 
@@ -79,18 +90,54 @@ export default function Dashboard({ activeSessionId, setActiveSessionId }: Dashb
     try {
       setConnectingId(id);
       setQrCode(null);
+      setPairingCode(null);
+      setShowPhoneInput(true);
+      setPairingSessionId(id);
       
       // Join socket room
       const socket = getSocket();
       socket.emit('join-session', id);
+    } catch (error) {
+      console.error('Failed to connect:', error);
+      alert('Gagal connect: ' + (error as Error).message);
+      setConnectingId(null);
+    }
+  }
+
+  async function handleConnectWithPhone() {
+    if (!phoneForPairing.trim() || !pairingSessionId) return;
+    
+    try {
+      setShowPhoneInput(false);
+      setConnectingId(pairingSessionId);
       
-      // Call connect API
+      await sessionsApi.connectPhone(pairingSessionId, phoneForPairing.trim());
+      setSessions((prev) =>
+        prev.map((s) => (s.id === pairingSessionId ? { ...s, status: 'connecting' } : s))
+      );
+    } catch (error) {
+      console.error('Failed to connect with phone:', error);
+      alert('Gagal connect: ' + (error as Error).message);
+      setConnectingId(null);
+      setPairingCode(null);
+    }
+  }
+
+  async function handleConnectWithQR(id: string) {
+    try {
+      setShowPhoneInput(false);
+      setConnectingId(id);
+      setQrCode(null);
+      setPairingCode(null);
+
+      const socket = getSocket();
+      socket.emit('join-session', id);
+
       await sessionsApi.connect(id);
       setSessions((prev) =>
         prev.map((s) => (s.id === id ? { ...s, status: 'connecting' } : s))
       );
 
-      // Start polling for QR as fallback (in case socket misses it)
       pollForQr(id);
     } catch (error) {
       console.error('Failed to connect:', error);
@@ -250,36 +297,103 @@ export default function Dashboard({ activeSessionId, setActiveSessionId }: Dashb
         </div>
       )}
 
-      {/* QR Code Modal */}
-      {connectingId && (
-        <div className="modal-overlay" onClick={() => { setQrCode(null); setConnectingId(null); }}>
+      {/* Connection Modal - Pairing Code or QR */}
+      {(connectingId || showPhoneInput) && (
+        <div className="modal-overlay" onClick={() => { setQrCode(null); setConnectingId(null); setPairingCode(null); setShowPhoneInput(false); setPhoneForPairing(''); }}>
           <div className="modal-content w-full max-w-sm mx-4 p-6 text-center" onClick={(e) => e.stopPropagation()}>
-            <div className="w-12 h-12 rounded-full bg-[#00A884]/10 flex items-center justify-center mx-auto mb-4">
-              <QrIcon className="w-6 h-6 text-[#00A884]" />
-            </div>
-            <h3 className="text-lg font-semibold text-[#E9EDEF] mb-1">
-              {qrCode ? 'Scan QR Code' : 'Menunggu QR Code...'}
-            </h3>
-            <p className="text-[#8696A0] text-xs mb-5">
-              Buka WhatsApp di HP → Menu → Linked Devices → Link a Device
-            </p>
-            {qrCode ? (
-              <div className="bg-white rounded-xl p-3 inline-block mb-5">
-                <img src={qrCode} alt="QR Code" className="w-56 h-56" />
-              </div>
-            ) : (
-              <div className="flex items-center justify-center mb-5 py-10">
-                <div className="w-10 h-10 border-4 border-[#2A3942] border-t-[#00A884] rounded-full animate-spin"></div>
-              </div>
+            {/* Phone Input for Pairing Code */}
+            {showPhoneInput && !pairingCode && !qrCode && (
+              <>
+                <div className="w-12 h-12 rounded-full bg-[#00A884]/10 flex items-center justify-center mx-auto mb-4">
+                  <LinkIcon className="w-6 h-6 text-[#00A884]" />
+                </div>
+                <h3 className="text-lg font-semibold text-[#E9EDEF] mb-1">Connect WhatsApp</h3>
+                <p className="text-[#8696A0] text-xs mb-5">
+                  Masukkan nomor HP untuk mendapatkan pairing code
+                </p>
+                <input
+                  type="text"
+                  placeholder="628123456789 (tanpa + dan spasi)"
+                  value={phoneForPairing}
+                  onChange={(e) => setPhoneForPairing(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && handleConnectWithPhone()}
+                  className="w-full bg-[#2A3942] border border-[#3B4A54] rounded-lg px-4 py-3 text-[#E9EDEF] placeholder-[#8696A0] focus:outline-none focus:ring-2 focus:ring-[#00A884] focus:border-transparent mb-4 text-center text-sm"
+                  autoFocus
+                />
+                <div className="flex flex-col gap-2">
+                  <button
+                    onClick={handleConnectWithPhone}
+                    disabled={!phoneForPairing.trim()}
+                    className="w-full px-5 py-2.5 bg-[#00A884] text-white rounded-lg hover:bg-[#00C49A] disabled:opacity-40 disabled:cursor-not-allowed transition-all font-medium text-sm"
+                  >
+                    Dapatkan Pairing Code
+                  </button>
+                  <button
+                    onClick={() => pairingSessionId && handleConnectWithQR(pairingSessionId)}
+                    className="w-full px-5 py-2.5 text-[#8696A0] hover:text-[#E9EDEF] hover:bg-[#2A3942] rounded-lg transition-colors text-xs"
+                  >
+                    Atau gunakan QR Code
+                  </button>
+                </div>
+              </>
             )}
-            <div>
-              <button
-                onClick={() => { setQrCode(null); setConnectingId(null); }}
-                className="px-5 py-2.5 text-[#8696A0] hover:text-[#E9EDEF] hover:bg-[#2A3942] rounded-lg transition-colors"
-              >
-                Tutup
-              </button>
-            </div>
+
+            {/* Pairing Code Display */}
+            {pairingCode && (
+              <>
+                <div className="w-12 h-12 rounded-full bg-[#00A884]/10 flex items-center justify-center mx-auto mb-4">
+                  <LinkIcon className="w-6 h-6 text-[#00A884]" />
+                </div>
+                <h3 className="text-lg font-semibold text-[#E9EDEF] mb-1">Masukkan Kode Ini</h3>
+                <p className="text-[#8696A0] text-xs mb-5">
+                  Buka WhatsApp di HP &rarr; Linked Devices &rarr; Link a Device &rarr; Link with phone number
+                </p>
+                <div className="bg-[#111B21] rounded-xl p-5 mb-5 border border-[#2A3942]">
+                  <p className="text-3xl font-mono font-bold text-[#00A884] tracking-[0.3em]">
+                    {pairingCode.slice(0, 4)}-{pairingCode.slice(4)}
+                  </p>
+                </div>
+                <p className="text-[#8696A0] text-[11px] mb-4">Kode berlaku 60 detik. Masukkan di WhatsApp kamu.</p>
+                <button
+                  onClick={() => { setQrCode(null); setConnectingId(null); setPairingCode(null); setShowPhoneInput(false); setPhoneForPairing(''); }}
+                  className="px-5 py-2.5 text-[#8696A0] hover:text-[#E9EDEF] hover:bg-[#2A3942] rounded-lg transition-colors"
+                >
+                  Tutup
+                </button>
+              </>
+            )}
+
+            {/* QR Code Display (fallback) */}
+            {!showPhoneInput && !pairingCode && (
+              <>
+                <div className="w-12 h-12 rounded-full bg-[#00A884]/10 flex items-center justify-center mx-auto mb-4">
+                  <QrIcon className="w-6 h-6 text-[#00A884]" />
+                </div>
+                <h3 className="text-lg font-semibold text-[#E9EDEF] mb-1">
+                  {qrCode ? 'Scan QR Code' : 'Menunggu QR Code...'}
+                </h3>
+                <p className="text-[#8696A0] text-xs mb-5">
+                  Buka WhatsApp di HP → Menu → Linked Devices → Link a Device
+                </p>
+                {qrCode ? (
+                  <div className="bg-white rounded-xl p-3 inline-block mb-5">
+                    <img src={qrCode} alt="QR Code" className="w-56 h-56" />
+                  </div>
+                ) : (
+                  <div className="flex items-center justify-center mb-5 py-10">
+                    <div className="w-10 h-10 border-4 border-[#2A3942] border-t-[#00A884] rounded-full animate-spin"></div>
+                  </div>
+                )}
+                <div>
+                  <button
+                    onClick={() => { setQrCode(null); setConnectingId(null); setPairingCode(null); setShowPhoneInput(false); setPhoneForPairing(''); }}
+                    className="px-5 py-2.5 text-[#8696A0] hover:text-[#E9EDEF] hover:bg-[#2A3942] rounded-lg transition-colors"
+                  >
+                    Tutup
+                  </button>
+                </div>
+              </>
+            )}
           </div>
         </div>
       )}

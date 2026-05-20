@@ -18,6 +18,7 @@ export const sessionsApi = {
   get: (id: string) => fetchApi(`/sessions/${id}`),
   create: (name: string) => fetchApi('/sessions', { method: 'POST', body: JSON.stringify({ name }) }),
   connect: (id: string) => fetchApi(`/sessions/${id}/connect`, { method: 'POST' }),
+  connectPhone: (id: string, phoneNumber: string) => fetchApi(`/sessions/${id}/connect-phone`, { method: 'POST', body: JSON.stringify({ phoneNumber }) }),
   disconnect: (id: string) => fetchApi(`/sessions/${id}/disconnect`, { method: 'POST' }),
   delete: (id: string) => fetchApi(`/sessions/${id}`, { method: 'DELETE' }),
   update: (id: string, name: string) => fetchApi(`/sessions/${id}`, { method: 'PUT', body: JSON.stringify({ name }) }),

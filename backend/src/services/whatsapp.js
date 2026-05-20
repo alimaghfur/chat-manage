@@ -10,14 +10,22 @@ const sessions = new Map(); // sessionId -> { sock }
 const retryCount = new Map(); // sessionId -> number of retries for 405
 
 const SESSIONS_DIR = path.join(__dirname, '../../sessions');
-const MAX_RETRY_ON_LOGOUT = 2; // Retry twice after clearing auth on 405
+const MAX_RETRY_ON_LOGOUT = 2;
 
 // Ensure sessions directory exists
 if (!fs.existsSync(SESSIONS_DIR)) {
   fs.mkdirSync(SESSIONS_DIR, { recursive: true });
 }
 
-async function createSession(sessionId, io) {
+/**
+ * Create a WhatsApp session
+ * @param {string} sessionId 
+ * @param {object} io - Socket.IO instance
+ * @param {object} options - { usePairingCode: boolean, phoneNumber: string }
+ */
+async function createSession(sessionId, io, options = {}) {
+  const { usePairingCode = false, phoneNumber = '' } = options;
+
   // If session already exists, disconnect first
   if (sessions.has(sessionId)) {
     try {
@@ -37,7 +45,7 @@ async function createSession(sessionId, io) {
   console.log(`[WA] Loading auth state for session: ${sessionId}`);
   const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
 
-  // Fetch latest WhatsApp Web version to avoid version mismatch
+  // Fetch latest WhatsApp Web version
   let version;
   try {
     const versionInfo = await fetchLatestBaileysVersion();
@@ -47,18 +55,43 @@ async function createSession(sessionId, io) {
     console.log(`[WA] Could not fetch latest version, using default`);
   }
 
-  console.log(`[WA] Creating socket for session: ${sessionId}`);
+  console.log(`[WA] Creating socket for session: ${sessionId} (pairingCode: ${usePairingCode})`);
   const sock = makeWASocket({
     auth: {
       creds: state.creds,
       keys: makeCacheableSignalKeyStore(state.keys, pino({ level: 'silent' })),
     },
     logger: pino({ level: 'silent' }),
-    browser: Browsers.macOS('Chrome'),
+    browser: usePairingCode ? ['Chat Manager', 'Chrome', '131.0.0'] : Browsers.macOS('Chrome'),
     syncFullHistory: false,
     generateHighQualityLinkPreview: false,
     ...(version && { version }),
   });
+
+  // If using pairing code, request it after socket is ready
+  if (usePairingCode && phoneNumber && !state.creds.registered) {
+    // Wait a moment for the socket to initialize
+    setTimeout(async () => {
+      try {
+        // Format phone number (remove + and spaces)
+        const cleanPhone = phoneNumber.replace(/[^0-9]/g, '');
+        console.log(`[WA] Requesting pairing code for: ${cleanPhone}`);
+        const code = await sock.requestPairingCode(cleanPhone);
+        console.log(`[WA] ✅ Pairing code for session ${sessionId}: ${code}`);
+
+        // Save pairing code to DB and emit to frontend
+        await prisma.session.update({
+          where: { id: sessionId },
+          data: { qrCode: `PAIRING:${code}`, status: 'connecting' },
+        });
+
+        io.emit('pairing-code', { sessionId, code });
+      } catch (err) {
+        console.error(`[WA] Failed to get pairing code for ${sessionId}:`, err.message);
+        io.emit('session-error', { sessionId, error: 'Failed to get pairing code: ' + err.message });
+      }
+    }, 3000);
+  }
 
   console.log(`[WA] Socket created, registering event listeners for: ${sessionId}`);
 
@@ -68,7 +101,7 @@ async function createSession(sessionId, io) {
 
     console.log(`[WA] connection.update for ${sessionId}:`, JSON.stringify({ connection, hasQr: !!qr, hasLastDisconnect: !!lastDisconnect, keys: Object.keys(update) }));
 
-    if (qr) {
+    if (qr && !usePairingCode) {
       // Reset retry count on successful QR generation
       retryCount.set(sessionId, 0);
       
@@ -107,7 +140,6 @@ async function createSession(sessionId, io) {
         }
 
         if (currentRetry < MAX_RETRY_ON_LOGOUT) {
-          // Retry with fresh state to generate QR code
           retryCount.set(sessionId, currentRetry + 1);
           console.log(`[WA] Retrying session ${sessionId} with fresh auth state (attempt ${currentRetry + 1}/${MAX_RETRY_ON_LOGOUT})`);
           
@@ -118,10 +150,8 @@ async function createSession(sessionId, io) {
             });
           } catch (e) {}
 
-          // Retry after short delay
-          setTimeout(() => createSession(sessionId, io), 2000);
+          setTimeout(() => createSession(sessionId, io, options), 2000);
         } else {
-          // Max retries reached, give up
           console.log(`[WA] Max retries reached for session ${sessionId}, giving up`);
           retryCount.delete(sessionId);
 
@@ -135,7 +165,6 @@ async function createSession(sessionId, io) {
           io.emit('session-status', { sessionId, status: 'disconnected' });
         }
       } else {
-        // Non-logout disconnect - try to reconnect
         try {
           await prisma.session.update({
             where: { id: sessionId },
@@ -145,9 +174,9 @@ async function createSession(sessionId, io) {
 
         io.emit('session-status', { sessionId, status: 'disconnected' });
 
-        // Reconnect for recoverable errors (e.g., network issues, restartRequired)
+        // Reconnect for recoverable errors
         console.log(`[WA] Reconnecting session ${sessionId} in 3 seconds...`);
-        setTimeout(() => createSession(sessionId, io), 3000);
+        setTimeout(() => createSession(sessionId, io, options), 3000);
       }
     }
 
@@ -243,7 +272,7 @@ async function createSession(sessionId, io) {
   });
 
   sessions.set(sessionId, { sock });
-  console.log(`[WA] Session ${sessionId} stored, waiting for QR...`);
+  console.log(`[WA] Session ${sessionId} stored, waiting for connection...`);
   return sock;
 }
 

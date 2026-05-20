@@ -78,7 +78,7 @@ router.get('/:id/qr', async (req, res) => {
   }
 });
 
-// Connect session (start WhatsApp connection)
+// Connect session via QR code (default)
 router.post('/:id/connect', async (req, res) => {
   try {
     const { id } = req.params;
@@ -90,7 +90,6 @@ router.post('/:id/connect', async (req, res) => {
     console.log(`🔄 Starting connection for session: ${id}`);
 
     // Clear existing auth state if session is disconnected
-    // This ensures a fresh QR code is generated
     const path = require('path');
     const fs = require('fs');
     const sessionDir = path.join(__dirname, '../../sessions', id);
@@ -99,7 +98,6 @@ router.post('/:id/connect', async (req, res) => {
       console.log(`🗑️ Cleared old auth state for session: ${id}`);
     }
     
-    // Don't await - createSession runs in background and emits QR via socket
     createSession(id, io).then(() => {
       console.log(`✅ createSession resolved for: ${id}`);
     }).catch((err) => {
@@ -109,6 +107,45 @@ router.post('/:id/connect', async (req, res) => {
     res.json({ message: 'Session connecting, check QR code' });
   } catch (error) {
     console.error('❌ Connect error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Connect session via Pairing Code (no QR scan needed)
+router.post('/:id/connect-phone', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { phoneNumber } = req.body;
+
+    if (!phoneNumber) {
+      return res.status(400).json({ error: 'phoneNumber is required (e.g. 628123456789)' });
+    }
+
+    const session = await prisma.session.findUnique({ where: { id } });
+    if (!session) return res.status(404).json({ error: 'Session not found' });
+
+    const io = req.app.get('io');
+    
+    console.log(`🔄 Starting pairing code connection for session: ${id}, phone: ${phoneNumber}`);
+
+    // Clear existing auth state
+    const path = require('path');
+    const fs = require('fs');
+    const sessionDir = path.join(__dirname, '../../sessions', id);
+    if (fs.existsSync(sessionDir)) {
+      fs.rmSync(sessionDir, { recursive: true });
+      console.log(`🗑️ Cleared old auth state for session: ${id}`);
+    }
+    
+    createSession(id, io, { usePairingCode: true, phoneNumber }).then(() => {
+      console.log(`✅ createSession (pairing) resolved for: ${id}`);
+    }).catch((err) => {
+      console.error(`❌ createSession (pairing) error for ${id}:`, err.message);
+    });
+
+    res.json({ message: 'Pairing code will be sent via socket. Enter it in WhatsApp > Linked Devices > Link with phone number' });
+  } catch (error) {
+    console.error('❌ Connect-phone error:', error);
     res.status(500).json({ error: error.message });
   }
 });
