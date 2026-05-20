@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { sessions as sessionsApi } from '@/lib/api';
+import { getSocket, joinSession } from '@/lib/socket';
 
 interface SessionsViewProps {
   apiKey: string;
@@ -80,12 +81,41 @@ export default function SessionsView({ apiKey }: SessionsViewProps) {
     setActionLoading('connect');
     try {
       const phone = connectMethod === 'pairing' ? phoneNumber : undefined;
-      const data = await sessionsApi.connect(connectingSession, connectMethod, phone, apiKey);
-      if (connectMethod === 'qr' && data.qr) {
-        setQrCode(data.qr);
-      } else if (connectMethod === 'pairing' && data.pairingCode) {
-        setPairingCode(data.pairingCode);
-      }
+      
+      // Join socket room to receive QR/pairing events
+      joinSession(connectingSession);
+      
+      // Listen for QR code from socket
+      const socket = getSocket();
+      socket.off('qr');
+      socket.off('pairing-code');
+      socket.off('session-connected');
+      
+      socket.on('qr', (data: { sessionId: string; qr: string }) => {
+        if (data.sessionId === connectingSession) {
+          setQrCode(data.qr);
+          setActionLoading(null);
+        }
+      });
+      
+      socket.on('pairing-code', (data: { sessionId: string; code: string }) => {
+        if (data.sessionId === connectingSession) {
+          setPairingCode(data.code);
+          setActionLoading(null);
+        }
+      });
+      
+      socket.on('session-connected', (data: { sessionId: string }) => {
+        if (data.sessionId === connectingSession) {
+          setShowConnectModal(false);
+          setQrCode(null);
+          setPairingCode(null);
+          setConnectingSession(null);
+          fetchSessions();
+        }
+      });
+
+      await sessionsApi.connect(connectingSession, connectMethod, phone, apiKey);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to connect session');
       setShowConnectModal(false);
@@ -300,9 +330,15 @@ export default function SessionsView({ apiKey }: SessionsViewProps) {
                       type="text"
                       value={phoneNumber}
                       onChange={(e) => setPhoneNumber(e.target.value)}
-                      placeholder="e.g., 1234567890"
+                      placeholder="628123456789"
                       className="w-full px-3 py-2 bg-[#2A3942] border border-[#2A3942] rounded-lg text-[#E9EDEF] placeholder-[#8696A0] focus:outline-none focus:border-[#00A884]"
                     />
+                  </div>
+                )}
+                {actionLoading === 'connect' && (
+                  <div className="flex items-center justify-center py-4">
+                    <div className="w-6 h-6 border-2 border-[#00A884] border-t-transparent rounded-full animate-spin mr-2"></div>
+                    <span className="text-sm text-[#8696A0]">Menunggu {connectMethod === 'qr' ? 'QR Code' : 'Pairing Code'}...</span>
                   </div>
                 )}
                 <div className="flex justify-end gap-3 mt-4">
