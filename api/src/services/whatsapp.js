@@ -77,27 +77,37 @@ async function createSession(sessionId, io, options = {}) {
 
   sessions.set(sessionId, { sock, store });
 
-  // Handle pairing code
-  if (usePairingCode && phoneNumber && !sock.authState.creds.registered) {
-    try {
-      const cleanNumber = phoneNumber.replace(/[^0-9]/g, '');
-      const code = await sock.requestPairingCode(cleanNumber);
-      io.to(`session:${sessionId}`).emit('pairing-code', {
-        sessionId,
-        code,
-      });
-    } catch (err) {
-      console.error(`Failed to request pairing code for ${sessionId}:`, err.message);
-      io.to(`session:${sessionId}`).emit('session-error', {
-        sessionId,
-        error: 'Failed to generate pairing code',
-      });
-    }
-  }
+  let pairingCodeRequested = false;
 
   // Connection update handler
   sock.ev.on('connection.update', async (update) => {
     const { connection, lastDisconnect, qr } = update;
+
+    // Request pairing code after socket is connected to WA server
+    if (usePairingCode && phoneNumber && !pairingCodeRequested && !sock.authState.creds.registered) {
+      if (connection === 'connecting' || qr) {
+        pairingCodeRequested = true;
+        // Wait for socket to be ready
+        setTimeout(async () => {
+          try {
+            const cleanNumber = phoneNumber.replace(/[^0-9]/g, '');
+            console.log(`Requesting pairing code for ${cleanNumber}...`);
+            const code = await sock.requestPairingCode(cleanNumber);
+            console.log(`Pairing code for ${sessionId}: ${code}`);
+            io.to(`session:${sessionId}`).emit('pairing-code', {
+              sessionId,
+              code,
+            });
+          } catch (err) {
+            console.error(`Failed to request pairing code for ${sessionId}:`, err.message);
+            io.to(`session:${sessionId}`).emit('session-error', {
+              sessionId,
+              error: 'Failed to generate pairing code: ' + err.message,
+            });
+          }
+        }, 3000);
+      }
+    }
 
     if (qr && !usePairingCode) {
       // Convert QR string to data URL image
