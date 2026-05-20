@@ -92,7 +92,16 @@ export default function DashboardView({ apiKey }: DashboardViewProps) {
     return (
       <div className="bg-red-900/20 border border-red-800 rounded-lg p-4 text-red-300">
         <p className="font-medium">Error loading dashboard</p>
-        <p className="text-sm mt-1">{error}</p>
+        <p className="text-sm mt-1 mb-3">{error}</p>
+        <div className="text-xs text-red-300/70 space-y-1">
+          <p>Periksa:</p>
+          <ul className="list-disc list-inside space-y-0.5">
+            <li>Backend sudah running di http://localhost:3001</li>
+            <li>File <code className="bg-red-900/30 px-1 rounded">api/.env</code> sudah ada dan berisi <code className="bg-red-900/30 px-1 rounded">API_MASTER_KEY=your-key</code></li>
+            <li>Backend sudah di-restart setelah pull latest</li>
+            <li>Database sudah di-setup: <code className="bg-red-900/30 px-1 rounded">npx prisma db push</code></li>
+          </ul>
+        </div>
       </div>
     );
   }

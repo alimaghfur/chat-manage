@@ -27,9 +27,26 @@ export default function Home() {
     localStorage.setItem('wa-dashboard-api-key', key);
   };
 
-  const handleKeySubmit = () => {
-    if (keyInput.trim()) {
-      handleApiKeyChange(keyInput.trim());
+  const handleKeySubmit = async () => {
+    if (!keyInput.trim()) return;
+    
+    // Verify key against backend before saving
+    try {
+      const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001/api';
+      const res = await fetch(`${apiUrl}/health/verify-key`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-api-key': keyInput.trim() },
+      });
+      const data = await res.json();
+      
+      if (data.valid) {
+        handleApiKeyChange(keyInput.trim());
+      } else {
+        alert('API Key tidak valid. Pastikan key sesuai dengan API_MASTER_KEY di file .env backend.');
+      }
+    } catch (err) {
+      // If backend is not running, still allow entry (will show error in dashboard)
+      alert('Tidak bisa menghubungi backend di ' + (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001/api') + '. Pastikan backend sudah running.');
     }
   };
 
