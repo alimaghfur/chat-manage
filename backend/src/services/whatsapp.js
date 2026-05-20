@@ -10,7 +10,7 @@ const sessions = new Map(); // sessionId -> { sock }
 const retryCount = new Map(); // sessionId -> number of retries for 405
 
 const SESSIONS_DIR = path.join(__dirname, '../../sessions');
-const MAX_RETRY_ON_LOGOUT = 1; // Retry once after clearing auth on 405
+const MAX_RETRY_ON_LOGOUT = 2; // Retry twice after clearing auth on 405
 
 // Ensure sessions directory exists
 if (!fs.existsSync(SESSIONS_DIR)) {
@@ -54,8 +54,9 @@ async function createSession(sessionId, io) {
       keys: makeCacheableSignalKeyStore(state.keys, pino({ level: 'silent' })),
     },
     logger: pino({ level: 'silent' }),
-    browser: Browsers.ubuntu('Chrome'),
+    browser: Browsers.macOS('Chrome'),
     syncFullHistory: false,
+    generateHighQualityLinkPreview: false,
     ...(version && { version }),
   });
 
@@ -65,7 +66,7 @@ async function createSession(sessionId, io) {
   sock.ev.on('connection.update', async (update) => {
     const { connection, lastDisconnect, qr } = update;
 
-    console.log(`[WA] connection.update for ${sessionId}:`, { connection, hasQr: !!qr });
+    console.log(`[WA] connection.update for ${sessionId}:`, JSON.stringify({ connection, hasQr: !!qr, hasLastDisconnect: !!lastDisconnect, keys: Object.keys(update) }));
 
     if (qr) {
       // Reset retry count on successful QR generation
