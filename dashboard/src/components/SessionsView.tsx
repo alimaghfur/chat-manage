@@ -30,9 +30,10 @@ export default function SessionsView({ apiKey }: SessionsViewProps) {
   const [actionLoading, setActionLoading] = useState<string | null>(null);
 
   const fetchSessions = useCallback(async () => {
+    if (!apiKey) { setLoading(false); return; }
     try {
       const data = await sessionsApi.list(apiKey);
-      const list = data.sessions || data || [];
+      const list = data.data || data || [];
       setSessionsList(Array.isArray(list) ? list : []);
       setError(null);
     } catch (err) {
