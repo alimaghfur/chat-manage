@@ -99,7 +99,7 @@ export default function Home() {
   const renderView = () => {
     switch (activeView) {
       case 'dashboard':
-        return <DashboardView apiKey={apiKey} />;
+        return <DashboardView apiKey={apiKey} onViewChange={setActiveView} />;
       case 'sessions':
         return <SessionsView apiKey={apiKey} />;
       case 'messages':

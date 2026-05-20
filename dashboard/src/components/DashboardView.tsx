@@ -5,6 +5,7 @@ import { sessions as sessionsApi, contacts, audit } from '@/lib/api';
 
 interface DashboardViewProps {
   apiKey: string;
+  onViewChange?: (view: string) => void;
 }
 
 interface SessionData {
@@ -21,7 +22,7 @@ interface AuditEntry {
   details?: string;
 }
 
-export default function DashboardView({ apiKey }: DashboardViewProps) {
+export default function DashboardView({ apiKey, onViewChange }: DashboardViewProps) {
   const [stats, setStats] = useState({
     totalSessions: 0,
     connected: 0,
@@ -139,7 +140,10 @@ export default function DashboardView({ apiKey }: DashboardViewProps) {
       <div className="bg-[#202C33] border border-[#2A3942] rounded-lg p-4">
         <h2 className="text-lg font-semibold text-[#E9EDEF] mb-3">Quick Actions</h2>
         <div className="flex flex-wrap gap-3">
-          <button className="px-4 py-2 bg-[#00A884] hover:bg-[#00C49A] text-white rounded-lg text-sm font-medium transition-colors">
+          <button
+            onClick={() => onViewChange?.('sessions')}
+            className="px-4 py-2 bg-[#00A884] hover:bg-[#00C49A] text-white rounded-lg text-sm font-medium transition-colors"
+          >
             Create Session
           </button>
           <a
