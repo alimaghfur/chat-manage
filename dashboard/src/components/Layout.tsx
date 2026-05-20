@@ -26,7 +26,7 @@ export default function Layout({ children, activeView, onViewChange, apiKey, onA
       if (!apiKey) return;
       try {
         const data = await sessionsApi.list(apiKey);
-        const sessions = data.sessions || data || [];
+        const sessions = data.data || data || [];
         const connected = Array.isArray(sessions)
           ? sessions.filter((s: { status: string }) => s.status === 'connected').length
           : 0;

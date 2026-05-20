@@ -42,14 +42,14 @@ export default function DashboardView({ apiKey }: DashboardViewProps) {
       setError(null);
       try {
         const sessionsData = await sessionsApi.list(apiKey);
-        const sessionsList: SessionData[] = sessionsData.sessions || sessionsData || [];
+        const sessionsList: SessionData[] = sessionsData.data || sessionsData || [];
         const connectedCount = sessionsList.filter((s) => s.status === 'connected').length;
 
         let contactCount = 0;
         for (const session of sessionsList.filter((s) => s.status === 'connected')) {
           try {
             const contactsData = await contacts.list(session.id, apiKey);
-            const contactsList = contactsData.contacts || contactsData || [];
+            const contactsList = contactsData.data || contactsData || [];
             contactCount += Array.isArray(contactsList) ? contactsList.length : 0;
           } catch {
             // Skip if contacts fetch fails for a session
@@ -65,7 +65,7 @@ export default function DashboardView({ apiKey }: DashboardViewProps) {
 
         try {
           const auditData = await audit.list(apiKey, { limit: '10' });
-          const auditList = auditData.logs || auditData.entries || auditData || [];
+          const auditList = auditData.data || auditData || [];
           setRecentActivity(Array.isArray(auditList) ? auditList.slice(0, 10) : []);
         } catch {
           setRecentActivity([]);

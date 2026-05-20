@@ -66,7 +66,7 @@ export const messages = {
 // Contacts
 export const contacts = {
   list: (sessionId: string, apiKey?: string) =>
-    fetchApi(`/sessions/${sessionId}/contacts`, {}, apiKey),
+    fetchApi(`/contacts/${sessionId}`, {}, apiKey),
 };
 
 // Groups
