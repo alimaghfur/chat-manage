@@ -1,4 +1,4 @@
-const { default: makeWASocket, DisconnectReason, useMultiFileAuthState } = require('@whiskeysockets/baileys');
+const { default: makeWASocket, DisconnectReason, useMultiFileAuthState, fetchLatestBaileysVersion, makeCacheableSignalKeyStore, Browsers } = require('@whiskeysockets/baileys');
 const pino = require('pino');
 const path = require('path');
 const fs = require('fs');
@@ -37,14 +37,26 @@ async function createSession(sessionId, io) {
   console.log(`[WA] Loading auth state for session: ${sessionId}`);
   const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
 
+  // Fetch latest WhatsApp Web version to avoid version mismatch
+  let version;
+  try {
+    const versionInfo = await fetchLatestBaileysVersion();
+    version = versionInfo.version;
+    console.log(`[WA] Using WA version: ${version.join('.')}`);
+  } catch (e) {
+    console.log(`[WA] Could not fetch latest version, using default`);
+  }
+
   console.log(`[WA] Creating socket for session: ${sessionId}`);
   const sock = makeWASocket({
-    auth: state,
+    auth: {
+      creds: state.creds,
+      keys: makeCacheableSignalKeyStore(state.keys, pino({ level: 'silent' })),
+    },
     logger: pino({ level: 'silent' }),
-    browser: ['Chat Manager', 'Chrome', '131.0.0'],
+    browser: Browsers.ubuntu('Chrome'),
     syncFullHistory: false,
-    printQRInTerminal: true,
-    qrTimeout: 60000,
+    ...(version && { version }),
   });
 
   console.log(`[WA] Socket created, registering event listeners for: ${sessionId}`);
