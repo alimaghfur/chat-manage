@@ -99,7 +99,7 @@ function authMiddleware(mode) {
         return next();
       }
 
-      // Default mode: validate against database
+      // Default mode: validate against database (also accepts master key)
       const providedKey =
         req.headers['x-api-key'] ||
         req.query.apiKey ||
@@ -110,6 +110,13 @@ function authMiddleware(mode) {
           error: 'API key is required. Provide via x-api-key header, apiKey query param, or Bearer token.',
           statusCode: 401,
         });
+      }
+
+      // Allow master key to access all routes
+      const masterKey = process.env.API_MASTER_KEY;
+      if (masterKey && providedKey === masterKey) {
+        req.apiKey = { id: 'master', name: 'Master Key', permissions: '*' };
+        return next();
       }
 
       const apiKey = await prisma.apiKey.findUnique({
