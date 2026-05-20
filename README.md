@@ -1,113 +1,151 @@
-# WhatsApp Chat Manager
+# WhatsApp API Gateway
 
-Aplikasi management chat WhatsApp lengkap dengan fitur multi-session, auto-reply, dan broadcast.
+Multi-session WhatsApp REST API with Dashboard, Webhooks, and full management capabilities.
 
-## Fitur
+## Features
 
-- **Multi-Session** - Tambahkan banyak nomor WhatsApp sekaligus
-- **Chat Real-time** - Kirim & terima pesan secara real-time via WebSocket
-- **Auto-Reply** - Balas pesan otomatis berdasarkan keyword (exact, contains, startsWith)
-- **Broadcast** - Kirim pesan massal ke banyak kontak sekaligus
-- **Manajemen Kontak** - Tambah, edit, label kontak
-- **QR Code Login** - Scan QR code untuk menghubungkan WhatsApp
+### Core
+- REST API with full WhatsApp functionality
+- Multi-session support (manage multiple WhatsApp accounts)
+- Webhooks with HMAC-SHA256 signature verification
+- API Key authentication with CIDR whitelisting
+- Swagger/OpenAPI interactive documentation
+- Rate limiting (per-key configurable)
+- Audit logging
 
-## Tech Stack
+### Messaging
+- Text messages (send/receive)
+- Media messages (images, videos, documents, audio)
+- Message reactions (emoji)
+- Bulk messaging with configurable delay
+- Message status tracking (sent/delivered/read)
+- Reply to messages (quoted)
 
-- **Frontend**: Next.js 14 + TypeScript + Tailwind CSS
-- **Backend**: Express.js + Socket.IO
-- **Database**: SQLite + Prisma ORM
-- **WhatsApp**: Baileys (unofficial WhatsApp Web API)
+### Advanced
+- Groups API (create, manage participants, send messages)
+- Labels management (organize chats)
+- Auto-replies (keyword-based with regex support)
+- Broadcast campaigns
+- Proxy support (per-session SOCKS5)
 
-## Cara Menjalankan
+### Infrastructure
+- SQLite (zero-config) or PostgreSQL
+- Optional Redis caching
+- Optional S3/MinIO media storage
+- Docker one-command deployment
+- Health checks (Kubernetes-ready)
+- Data export/import migration tools
 
-### 1. Install Dependencies
+## Quick Start
+
+### Option 1: Docker (Recommended)
 
 ```bash
-# Install root dependencies
-npm install
-
-# Install backend dependencies
-cd backend && npm install
-
-# Install frontend dependencies
-cd ../frontend && npm install
+docker-compose up -d
 ```
 
-### 2. Setup Database
+### Option 2: Manual
 
 ```bash
-cd backend
-npx prisma migrate dev --name init
-npx prisma generate
-```
+# Install dependencies
+cd api && npm install
 
-### 3. Jalankan Aplikasi
+# Setup database
+cp .env.example .env
+npx prisma db push
 
-```bash
-# Dari root folder, jalankan keduanya sekaligus:
+# Start server
 npm run dev
-
-# Atau jalankan terpisah:
-# Terminal 1 - Backend
-cd backend && npm run dev
-
-# Terminal 2 - Frontend
-cd frontend && npm run dev
 ```
 
-### 4. Akses Aplikasi
+## API Documentation
 
-- Frontend: http://localhost:3000
-- Backend API: http://localhost:3001
-- Health Check: http://localhost:3001/api/health
+Once running, visit: **http://localhost:3001/api-docs**
 
-## Cara Penggunaan
+## Authentication
 
-1. **Buat Session** - Klik "Tambah Session" dan beri nama
-2. **Connect WhatsApp** - Klik "Connect" lalu scan QR code dengan WhatsApp di HP
-3. **Mulai Chat** - Pilih menu "Chat" di sidebar, tambah kontak atau tunggu pesan masuk
-4. **Setup Auto-Reply** - Pilih menu "Auto Reply", tambahkan keyword dan balasan
-5. **Broadcast** - Pilih menu "Broadcast", pilih kontak dan kirim pesan massal
+All API endpoints (except /health) require an API key:
 
-## API Endpoints
+```bash
+# Header
+curl -H "x-api-key: YOUR_KEY" http://localhost:3001/api/sessions
 
-### Sessions
-- `GET /api/sessions` - List semua session
-- `POST /api/sessions` - Buat session baru
-- `POST /api/sessions/:id/connect` - Connect session (generate QR)
-- `POST /api/sessions/:id/disconnect` - Disconnect session
-- `DELETE /api/sessions/:id` - Hapus session
+# Query param
+curl http://localhost:3001/api/sessions?apiKey=YOUR_KEY
+```
 
-### Contacts
-- `GET /api/contacts/:sessionId` - List kontak session
-- `POST /api/contacts/:sessionId` - Tambah kontak manual
+### Generate API Key
 
-### Messages
-- `GET /api/messages/:sessionId/:jid` - Get chat history
-- `POST /api/messages/send` - Kirim pesan
+Use the master key to create API keys:
 
-### Auto-Reply
-- `GET /api/auto-replies/:sessionId` - List auto-reply rules
-- `POST /api/auto-replies` - Buat auto-reply rule
-- `PUT /api/auto-replies/:id` - Update rule
-- `DELETE /api/auto-replies/:id` - Hapus rule
+```bash
+curl -X POST http://localhost:3001/api/keys \
+  -H "x-api-key: YOUR_MASTER_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "Production", "rateLimit": 200}'
+```
 
-### Broadcasts
-- `GET /api/broadcasts/:sessionId` - List broadcasts
-- `POST /api/broadcasts` - Buat & kirim broadcast
+## Connect WhatsApp
 
-## WebSocket Events
+### Via Pairing Code (Recommended)
 
-- `qr-code` - QR code untuk scan
-- `session-status` - Status koneksi session
-- `new-message` - Pesan baru masuk/keluar
-- `message-status` - Update status pesan (sent/delivered/read)
-- `broadcast-progress` - Progress broadcast
-- `broadcast-complete` - Broadcast selesai
+```bash
+curl -X POST http://localhost:3001/api/sessions/SESSION_ID/connect \
+  -H "x-api-key: YOUR_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"method": "pairing", "phoneNumber": "628123456789"}'
+```
 
-## ⚠️ Disclaimer
+### Via QR Code
 
-Aplikasi ini menggunakan library **Baileys** (unofficial WhatsApp Web API). Penggunaan library ini bisa melanggar Terms of Service WhatsApp dan akun bisa terkena ban. Gunakan dengan bijak dan risiko ditanggung sendiri.
+```bash
+curl -X POST http://localhost:3001/api/sessions/SESSION_ID/connect \
+  -H "x-api-key: YOUR_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"method": "qr"}'
+```
+
+Listen on WebSocket for `qr` event.
+
+## Send Messages
+
+```bash
+# Text
+curl -X POST http://localhost:3001/api/messages/text \
+  -H "x-api-key: YOUR_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"sessionId": "...", "to": "628xxx@s.whatsapp.net", "text": "Hello!"}'
+
+# Media
+curl -X POST http://localhost:3001/api/messages/media \
+  -H "x-api-key: YOUR_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"sessionId": "...", "to": "628xxx@s.whatsapp.net", "type": "image", "mediaUrl": "https://...", "caption": "Check this!"}'
+```
+
+## Webhooks
+
+Register webhook endpoints to receive real-time events:
+
+```bash
+curl -X POST http://localhost:3001/api/webhooks \
+  -H "x-api-key: YOUR_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"url": "https://your-server.com/webhook", "events": ["message", "status"], "secret": "my-secret"}'
+```
+
+Events: `message`, `status`, `connection`, `*` (all)
+
+## Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| DATABASE_URL | file:./dev.db | Database connection string |
+| PORT | 3001 | Server port |
+| API_MASTER_KEY | - | Master key for /api/keys |
+| REDIS_URL | - | Redis connection (optional) |
+| S3_ENDPOINT | - | S3/MinIO endpoint (optional) |
+| RATE_LIMIT_MAX_REQUESTS | 100 | Default rate limit per minute |
 
 ## License
 
