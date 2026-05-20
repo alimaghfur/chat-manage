@@ -23,6 +23,7 @@ export default function Layout({ children, activeView, onViewChange, apiKey, onA
 
   useEffect(() => {
     const fetchSessions = async () => {
+      if (!apiKey) return;
       try {
         const data = await sessionsApi.list(apiKey);
         const sessions = data.sessions || data || [];

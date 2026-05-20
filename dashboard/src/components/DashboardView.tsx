@@ -34,6 +34,10 @@ export default function DashboardView({ apiKey }: DashboardViewProps) {
 
   useEffect(() => {
     const fetchData = async () => {
+      if (!apiKey) {
+        setLoading(false);
+        return;
+      }
       setLoading(true);
       setError(null);
       try {
