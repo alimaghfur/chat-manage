@@ -1,0 +1,201 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ==================== AUTH ====================
+
+model ApiKey {
+  id          String   @id @default(cuid())
+  name        String
+  key         String   @unique
+  permissions String   @default("*") // JSON array of permissions or "*" for all
+  cidrWhitelist String? // JSON array of allowed CIDRs, null = allow all
+  rateLimit   Int      @default(100) // requests per minute
+  isActive    Boolean  @default(true)
+  lastUsedAt  DateTime?
+  expiresAt   DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  auditLogs   AuditLog[]
+}
+
+// ==================== SESSIONS ====================
+
+model Session {
+  id          String   @id @default(cuid())
+  name        String
+  phone       String?
+  status      String   @default("disconnected") // connected, disconnected, connecting
+  qrCode      String?
+  proxyUrl    String?  // per-session proxy (socks5://user:pass@host:port)
+  webhookUrl  String?  // per-session webhook override
+  metadata    String?  // JSON extra data
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  contacts    Contact[]
+  messages    Message[]
+  groups      Group[]
+  labels      Label[]
+  autoReplies AutoReply[]
+  broadcasts  Broadcast[]
+}
+
+// ==================== CONTACTS ====================
+
+model Contact {
+  id          String   @id @default(cuid())
+  sessionId   String
+  jid         String
+  name        String?
+  pushName    String?
+  phone       String
+  avatar      String?
+  isGroup     Boolean  @default(false)
+  metadata    String?  // JSON
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  session     Session  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  messages    Message[]
+
+  @@unique([sessionId, jid])
+  @@index([phone])
+}
+
+// ==================== MESSAGES ====================
+
+model Message {
+  id          String   @id @default(cuid())
+  sessionId   String
+  contactId   String?
+  jid         String
+  content     String
+  type        String   @default("text") // text, image, video, document, audio, sticker, reaction, location
+  mediaUrl    String?
+  mimeType    String?
+  fileName    String?
+  fromMe      Boolean  @default(false)
+  status      String   @default("pending") // pending, sent, delivered, read, failed, received
+  timestamp   DateTime @default(now())
+  messageId   String?  // WhatsApp message ID
+  quotedMsgId String?  // reply to message
+  metadata    String?  // JSON (reactions, etc)
+  createdAt   DateTime @default(now())
+
+  session     Session  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  contact     Contact? @relation(fields: [contactId], references: [id], onDelete: SetNull)
+
+  @@index([sessionId, jid])
+  @@index([timestamp])
+  @@index([messageId])
+}
+
+// ==================== GROUPS ====================
+
+model Group {
+  id            String   @id @default(cuid())
+  sessionId     String
+  jid           String
+  name          String
+  description   String?
+  participants  String   // JSON array
+  admins        String?  // JSON array
+  owner         String?
+  profilePic    String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  session       Session  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionId, jid])
+}
+
+// ==================== LABELS ====================
+
+model Label {
+  id          String   @id @default(cuid())
+  sessionId   String
+  name        String
+  color       String   @default("#25D366")
+  chatJids    String   @default("[]") // JSON array of JIDs
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  session     Session  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+}
+
+// ==================== AUTO REPLIES ====================
+
+model AutoReply {
+  id          String   @id @default(cuid())
+  sessionId   String
+  trigger     String
+  response    String
+  isActive    Boolean  @default(true)
+  matchType   String   @default("contains") // exact, contains, startsWith, regex
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  session     Session  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+}
+
+// ==================== BROADCASTS ====================
+
+model Broadcast {
+  id          String   @id @default(cuid())
+  sessionId   String
+  name        String
+  message     String
+  mediaUrl    String?
+  recipients  String   // JSON array of JIDs
+  status      String   @default("pending") // pending, sending, completed, failed
+  sentCount   Int      @default(0)
+  failCount   Int      @default(0)
+  totalCount  Int      @default(0)
+  delay       Int      @default(2000) // delay between messages in ms
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  session     Session  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+}
+
+// ==================== WEBHOOKS ====================
+
+model Webhook {
+  id          String   @id @default(cuid())
+  url         String
+  events      String   @default("*") // JSON array: ["message", "status", "connection"] or "*"
+  secret      String?  // HMAC secret for signature
+  isActive    Boolean  @default(true)
+  retries     Int      @default(3)
+  lastStatus  Int?     // last HTTP status code
+  lastError   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+// ==================== AUDIT LOG ====================
+
+model AuditLog {
+  id          String   @id @default(cuid())
+  apiKeyId    String?
+  action      String   // e.g. "session.create", "message.send"
+  resource    String?  // e.g. "session:abc123"
+  details     String?  // JSON
+  ip          String?
+  userAgent   String?
+  statusCode  Int?
+  createdAt   DateTime @default(now())
+
+  apiKey      ApiKey?  @relation(fields: [apiKeyId], references: [id], onDelete: SetNull)
+
+  @@index([createdAt])
+  @@index([action])
+}
