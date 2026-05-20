@@ -88,6 +88,16 @@ router.post('/:id/connect', async (req, res) => {
     const io = req.app.get('io');
     
     console.log(`🔄 Starting connection for session: ${id}`);
+
+    // Clear existing auth state if session is disconnected
+    // This ensures a fresh QR code is generated
+    const path = require('path');
+    const fs = require('fs');
+    const sessionDir = path.join(__dirname, '../../sessions', id);
+    if (session.status === 'disconnected' && fs.existsSync(sessionDir)) {
+      fs.rmSync(sessionDir, { recursive: true });
+      console.log(`🗑️ Cleared old auth state for session: ${id}`);
+    }
     
     // Don't await - createSession runs in background and emits QR via socket
     createSession(id, io).then(() => {

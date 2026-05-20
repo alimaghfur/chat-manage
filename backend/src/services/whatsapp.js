@@ -7,8 +7,10 @@ const { PrismaClient } = require('@prisma/client');
 
 const prisma = new PrismaClient();
 const sessions = new Map(); // sessionId -> { sock }
+const retryCount = new Map(); // sessionId -> number of retries for 405
 
 const SESSIONS_DIR = path.join(__dirname, '../../sessions');
+const MAX_RETRY_ON_LOGOUT = 1; // Retry once after clearing auth on 405
 
 // Ensure sessions directory exists
 if (!fs.existsSync(SESSIONS_DIR)) {
@@ -41,6 +43,8 @@ async function createSession(sessionId, io) {
     logger: pino({ level: 'silent' }),
     browser: ['Chat Manager', 'Chrome', '131.0.0'],
     syncFullHistory: false,
+    printQRInTerminal: true,
+    qrTimeout: 60000,
   });
 
   console.log(`[WA] Socket created, registering event listeners for: ${sessionId}`);
@@ -52,6 +56,9 @@ async function createSession(sessionId, io) {
     console.log(`[WA] connection.update for ${sessionId}:`, { connection, hasQr: !!qr });
 
     if (qr) {
+      // Reset retry count on successful QR generation
+      retryCount.set(sessionId, 0);
+      
       try {
         console.log(`[WA] QR Code received for session: ${sessionId}`);
         const qrDataUrl = await QRCode.toDataURL(qr);
@@ -72,32 +79,71 @@ async function createSession(sessionId, io) {
 
     if (connection === 'close') {
       const statusCode = (lastDisconnect?.error)?.output?.statusCode;
-      const shouldReconnect = statusCode !== DisconnectReason.loggedOut && statusCode !== 405;
+      const isLoggedOut = statusCode === DisconnectReason.loggedOut || statusCode === 405;
 
-      console.log(`[WA] Connection closed for ${sessionId}, statusCode: ${statusCode}, shouldReconnect: ${shouldReconnect}`);
+      console.log(`[WA] Connection closed for ${sessionId}, statusCode: ${statusCode}, isLoggedOut: ${isLoggedOut}`);
 
-      try {
-        await prisma.session.update({
-          where: { id: sessionId },
-          data: { status: 'disconnected', qrCode: null },
-        });
-      } catch (e) {}
-
-      io.emit('session-status', { sessionId, status: 'disconnected' });
-
-      if (shouldReconnect) {
-        setTimeout(() => createSession(sessionId, io), 3000);
-      } else {
+      if (isLoggedOut) {
+        const currentRetry = retryCount.get(sessionId) || 0;
+        
+        // Clear the corrupt/expired auth state
         sessions.delete(sessionId);
         if (fs.existsSync(sessionDir)) {
           fs.rmSync(sessionDir, { recursive: true });
+          console.log(`[WA] Cleared auth state for session: ${sessionId}`);
         }
+
+        if (currentRetry < MAX_RETRY_ON_LOGOUT) {
+          // Retry with fresh state to generate QR code
+          retryCount.set(sessionId, currentRetry + 1);
+          console.log(`[WA] Retrying session ${sessionId} with fresh auth state (attempt ${currentRetry + 1}/${MAX_RETRY_ON_LOGOUT})`);
+          
+          try {
+            await prisma.session.update({
+              where: { id: sessionId },
+              data: { status: 'connecting', qrCode: null },
+            });
+          } catch (e) {}
+
+          // Retry after short delay
+          setTimeout(() => createSession(sessionId, io), 2000);
+        } else {
+          // Max retries reached, give up
+          console.log(`[WA] Max retries reached for session ${sessionId}, giving up`);
+          retryCount.delete(sessionId);
+
+          try {
+            await prisma.session.update({
+              where: { id: sessionId },
+              data: { status: 'disconnected', qrCode: null },
+            });
+          } catch (e) {}
+
+          io.emit('session-status', { sessionId, status: 'disconnected' });
+        }
+      } else {
+        // Non-logout disconnect - try to reconnect
+        try {
+          await prisma.session.update({
+            where: { id: sessionId },
+            data: { status: 'disconnected', qrCode: null },
+          });
+        } catch (e) {}
+
+        io.emit('session-status', { sessionId, status: 'disconnected' });
+
+        // Reconnect for recoverable errors (e.g., network issues, restartRequired)
+        console.log(`[WA] Reconnecting session ${sessionId} in 3 seconds...`);
+        setTimeout(() => createSession(sessionId, io), 3000);
       }
     }
 
     if (connection === 'open') {
       const user = sock.user;
       console.log(`[WA] ✅ Session ${sessionId} connected as ${user?.id}`);
+
+      // Reset retry count on successful connection
+      retryCount.set(sessionId, 0);
 
       try {
         await prisma.session.update({
