@@ -32,7 +32,10 @@ model Session {
   name        String
   phone       String?
   status      String   @default("disconnected") // connected, disconnected, connecting
-  qrCode      String?
+  phoneNumberId String?  // WhatsApp Business Phone Number ID
+  accessToken   String?  // Meta API access token
+  waBusinessId  String?  // WhatsApp Business Account ID
+  webhookVerifyToken String? // Token for webhook verification
   proxyUrl    String?  // per-session proxy (socks5://user:pass@host:port)
   webhookUrl  String?  // per-session webhook override
   metadata    String?  // JSON extra data

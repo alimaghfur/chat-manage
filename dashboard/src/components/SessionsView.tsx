@@ -2,7 +2,6 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { sessions as sessionsApi } from '@/lib/api';
-import { getSocket, joinSession } from '@/lib/socket';
 
 interface SessionsViewProps {
   apiKey: string;
@@ -12,6 +11,10 @@ interface Session {
   id: string;
   name: string;
   status: string;
+  phone?: string;
+  phoneNumberId?: string;
+  waBusinessId?: string;
+  isConnected?: boolean;
   createdAt?: string;
 }
 
@@ -20,14 +23,10 @@ export default function SessionsView({ apiKey }: SessionsViewProps) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showCreateModal, setShowCreateModal] = useState(false);
-  const [showConnectModal, setShowConnectModal] = useState(false);
-  const [connectingSession, setConnectingSession] = useState<string | null>(null);
-  const [connectMethod, setConnectMethod] = useState<'qr' | 'pairing'>('qr');
-  const [phoneNumber, setPhoneNumber] = useState('');
-  const [qrCode, setQrCode] = useState<string | null>(null);
-  const [pairingCode, setPairingCode] = useState<string | null>(null);
   const [newSessionName, setNewSessionName] = useState('');
-  const [newSessionProxy, setNewSessionProxy] = useState('');
+  const [newPhoneNumberId, setNewPhoneNumberId] = useState('');
+  const [newAccessToken, setNewAccessToken] = useState('');
+  const [newWaBusinessId, setNewWaBusinessId] = useState('');
   const [actionLoading, setActionLoading] = useState<string | null>(null);
 
   const fetchSessions = useCallback(async () => {
@@ -46,21 +45,28 @@ export default function SessionsView({ apiKey }: SessionsViewProps) {
 
   useEffect(() => {
     fetchSessions();
-    const interval = setInterval(fetchSessions, 5000);
+    const interval = setInterval(fetchSessions, 10000);
     return () => clearInterval(interval);
   }, [fetchSessions]);
 
   const handleCreate = async () => {
-    if (!newSessionName.trim()) return;
+    if (!newSessionName.trim() || !newPhoneNumberId.trim() || !newAccessToken.trim()) return;
     setActionLoading('create');
     try {
       await sessionsApi.create(
-        { name: newSessionName, proxyUrl: newSessionProxy || undefined },
+        {
+          name: newSessionName,
+          phoneNumberId: newPhoneNumberId,
+          accessToken: newAccessToken,
+          waBusinessId: newWaBusinessId || undefined,
+        },
         apiKey
       );
       setShowCreateModal(false);
       setNewSessionName('');
-      setNewSessionProxy('');
+      setNewPhoneNumberId('');
+      setNewAccessToken('');
+      setNewWaBusinessId('');
       await fetchSessions();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create session');
@@ -69,56 +75,14 @@ export default function SessionsView({ apiKey }: SessionsViewProps) {
     }
   };
 
+
   const handleConnect = async (sessionId: string) => {
-    setConnectingSession(sessionId);
-    setShowConnectModal(true);
-    setQrCode(null);
-    setPairingCode(null);
-  };
-
-  const startConnect = async () => {
-    if (!connectingSession) return;
-    setActionLoading('connect');
+    setActionLoading(sessionId);
     try {
-      const phone = connectMethod === 'pairing' ? phoneNumber : undefined;
-      
-      // Join socket room to receive QR/pairing events
-      joinSession(connectingSession);
-      
-      // Listen for QR code from socket
-      const socket = getSocket();
-      socket.off('qr');
-      socket.off('pairing-code');
-      socket.off('session-connected');
-      
-      socket.on('qr', (data: { sessionId: string; qr: string }) => {
-        if (data.sessionId === connectingSession) {
-          setQrCode(data.qr);
-          setActionLoading(null);
-        }
-      });
-      
-      socket.on('pairing-code', (data: { sessionId: string; code: string }) => {
-        if (data.sessionId === connectingSession) {
-          setPairingCode(data.code);
-          setActionLoading(null);
-        }
-      });
-      
-      socket.on('session-connected', (data: { sessionId: string }) => {
-        if (data.sessionId === connectingSession) {
-          setShowConnectModal(false);
-          setQrCode(null);
-          setPairingCode(null);
-          setConnectingSession(null);
-          fetchSessions();
-        }
-      });
-
-      await sessionsApi.connect(connectingSession, connectMethod, phone, apiKey);
+      await sessionsApi.connect(sessionId, apiKey);
+      await fetchSessions();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to connect session');
-      setShowConnectModal(false);
+      setError(err instanceof Error ? err.message : 'Failed to verify token');
     } finally {
       setActionLoading(null);
     }
@@ -170,6 +134,7 @@ export default function SessionsView({ apiKey }: SessionsViewProps) {
     );
   }
 
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -196,7 +161,7 @@ export default function SessionsView({ apiKey }: SessionsViewProps) {
         {sessionsList.length === 0 ? (
           <div className="col-span-full text-center py-12 text-[#8696A0]">
             <p className="text-lg">No sessions yet</p>
-            <p className="text-sm mt-1">Create a session to get started</p>
+            <p className="text-sm mt-1">Create a session with your Cloud API credentials</p>
           </div>
         ) : (
           sessionsList.map((session) => (
@@ -211,15 +176,18 @@ export default function SessionsView({ apiKey }: SessionsViewProps) {
                   <span className="text-xs text-[#8696A0] capitalize">{session.status}</span>
                 </div>
               </div>
-              <p className="text-xs text-[#8696A0] mb-3 font-mono">{session.id}</p>
-              <div className="flex gap-2">
+              <p className="text-xs text-[#8696A0] mb-1 font-mono">{session.id}</p>
+              {session.phone && (
+                <p className="text-xs text-[#8696A0] mb-3">{session.phone}</p>
+              )}
+              <div className="flex gap-2 mt-3">
                 {session.status !== 'connected' && (
                   <button
                     onClick={() => handleConnect(session.id)}
                     disabled={actionLoading === session.id}
                     className="px-3 py-1.5 bg-[#00A884] hover:bg-[#00C49A] text-white rounded text-xs font-medium transition-colors disabled:opacity-50"
                   >
-                    Connect
+                    {actionLoading === session.id ? 'Verifying...' : 'Verify & Connect'}
                   </button>
                 )}
                 {session.status === 'connected' && (
@@ -244,11 +212,15 @@ export default function SessionsView({ apiKey }: SessionsViewProps) {
         )}
       </div>
 
+
       {/* Create Session Modal */}
       {showCreateModal && (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
           <div className="bg-[#202C33] border border-[#2A3942] rounded-lg p-6 w-full max-w-md animate-fade-in">
             <h2 className="text-lg font-semibold text-[#E9EDEF] mb-4">Create New Session</h2>
+            <p className="text-xs text-[#8696A0] mb-4">
+              Enter your WhatsApp Cloud API credentials from Meta Business Suite.
+            </p>
             <div className="space-y-4">
               <div>
                 <label className="block text-sm text-[#8696A0] mb-1">Session Name *</label>
@@ -256,17 +228,37 @@ export default function SessionsView({ apiKey }: SessionsViewProps) {
                   type="text"
                   value={newSessionName}
                   onChange={(e) => setNewSessionName(e.target.value)}
-                  placeholder="e.g., my-business"
+                  placeholder="e.g., My Business"
                   className="w-full px-3 py-2 bg-[#2A3942] border border-[#2A3942] rounded-lg text-[#E9EDEF] placeholder-[#8696A0] focus:outline-none focus:border-[#00A884]"
                 />
               </div>
               <div>
-                <label className="block text-sm text-[#8696A0] mb-1">Proxy URL (optional)</label>
+                <label className="block text-sm text-[#8696A0] mb-1">Phone Number ID *</label>
                 <input
                   type="text"
-                  value={newSessionProxy}
-                  onChange={(e) => setNewSessionProxy(e.target.value)}
-                  placeholder="http://proxy:port"
+                  value={newPhoneNumberId}
+                  onChange={(e) => setNewPhoneNumberId(e.target.value)}
+                  placeholder="e.g., 123456789012345"
+                  className="w-full px-3 py-2 bg-[#2A3942] border border-[#2A3942] rounded-lg text-[#E9EDEF] placeholder-[#8696A0] focus:outline-none focus:border-[#00A884]"
+                />
+              </div>
+              <div>
+                <label className="block text-sm text-[#8696A0] mb-1">Access Token *</label>
+                <input
+                  type="password"
+                  value={newAccessToken}
+                  onChange={(e) => setNewAccessToken(e.target.value)}
+                  placeholder="EAABx..."
+                  className="w-full px-3 py-2 bg-[#2A3942] border border-[#2A3942] rounded-lg text-[#E9EDEF] placeholder-[#8696A0] focus:outline-none focus:border-[#00A884]"
+                />
+              </div>
+              <div>
+                <label className="block text-sm text-[#8696A0] mb-1">WhatsApp Business Account ID</label>
+                <input
+                  type="text"
+                  value={newWaBusinessId}
+                  onChange={(e) => setNewWaBusinessId(e.target.value)}
+                  placeholder="e.g., 987654321098765 (optional)"
                   className="w-full px-3 py-2 bg-[#2A3942] border border-[#2A3942] rounded-lg text-[#E9EDEF] placeholder-[#8696A0] focus:outline-none focus:border-[#00A884]"
                 />
               </div>
@@ -280,130 +272,12 @@ export default function SessionsView({ apiKey }: SessionsViewProps) {
               </button>
               <button
                 onClick={handleCreate}
-                disabled={!newSessionName.trim() || actionLoading === 'create'}
+                disabled={!newSessionName.trim() || !newPhoneNumberId.trim() || !newAccessToken.trim() || actionLoading === 'create'}
                 className="px-4 py-2 bg-[#00A884] hover:bg-[#00C49A] text-white rounded-lg text-sm font-medium transition-colors disabled:opacity-50"
               >
-                {actionLoading === 'create' ? 'Creating...' : 'Create'}
+                {actionLoading === 'create' ? 'Creating...' : 'Create Session'}
               </button>
             </div>
-          </div>
-        </div>
-      )}
-
-      {/* Connect Modal */}
-      {showConnectModal && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
-          <div className="bg-[#202C33] border border-[#2A3942] rounded-lg p-6 w-full max-w-md animate-fade-in">
-            <h2 className="text-lg font-semibold text-[#E9EDEF] mb-4">Connect Session</h2>
-
-            {!qrCode && !pairingCode && (
-              <div className="space-y-4">
-                <div>
-                  <label className="block text-sm text-[#8696A0] mb-2">Connection Method</label>
-                  <div className="flex gap-3">
-                    <button
-                      onClick={() => setConnectMethod('qr')}
-                      className={`flex-1 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-                        connectMethod === 'qr'
-                          ? 'bg-[#00A884] text-white'
-                          : 'bg-[#2A3942] text-[#8696A0] hover:text-[#E9EDEF]'
-                      }`}
-                    >
-                      QR Code
-                    </button>
-                    <button
-                      onClick={() => setConnectMethod('pairing')}
-                      className={`flex-1 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-                        connectMethod === 'pairing'
-                          ? 'bg-[#00A884] text-white'
-                          : 'bg-[#2A3942] text-[#8696A0] hover:text-[#E9EDEF]'
-                      }`}
-                    >
-                      Pairing Code
-                    </button>
-                  </div>
-                </div>
-                {connectMethod === 'pairing' && (
-                  <div>
-                    <label className="block text-sm text-[#8696A0] mb-1">Phone Number</label>
-                    <input
-                      type="text"
-                      value={phoneNumber}
-                      onChange={(e) => setPhoneNumber(e.target.value)}
-                      placeholder="628123456789"
-                      className="w-full px-3 py-2 bg-[#2A3942] border border-[#2A3942] rounded-lg text-[#E9EDEF] placeholder-[#8696A0] focus:outline-none focus:border-[#00A884]"
-                    />
-                  </div>
-                )}
-                {actionLoading === 'connect' && (
-                  <div className="flex items-center justify-center py-4">
-                    <div className="w-6 h-6 border-2 border-[#00A884] border-t-transparent rounded-full animate-spin mr-2"></div>
-                    <span className="text-sm text-[#8696A0]">Menunggu {connectMethod === 'qr' ? 'QR Code' : 'Pairing Code'}...</span>
-                  </div>
-                )}
-                <div className="flex justify-end gap-3 mt-4">
-                  <button
-                    onClick={() => {
-                      setShowConnectModal(false);
-                      setConnectingSession(null);
-                    }}
-                    className="px-4 py-2 text-[#8696A0] hover:text-[#E9EDEF] text-sm transition-colors"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    onClick={startConnect}
-                    disabled={actionLoading === 'connect' || (connectMethod === 'pairing' && !phoneNumber)}
-                    className="px-4 py-2 bg-[#00A884] hover:bg-[#00C49A] text-white rounded-lg text-sm font-medium transition-colors disabled:opacity-50"
-                  >
-                    {actionLoading === 'connect' ? 'Connecting...' : 'Connect'}
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {qrCode && (
-              <div className="text-center space-y-4">
-                <p className="text-sm text-[#8696A0]">Scan this QR code with WhatsApp</p>
-                <div className="bg-white p-4 rounded-lg inline-block">
-                  <img src={qrCode} alt="QR Code" className="w-48 h-48" />
-                </div>
-                <button
-                  onClick={() => {
-                    setShowConnectModal(false);
-                    setQrCode(null);
-                    setConnectingSession(null);
-                  }}
-                  className="px-4 py-2 text-[#8696A0] hover:text-[#E9EDEF] text-sm transition-colors"
-                >
-                  Close
-                </button>
-              </div>
-            )}
-
-            {pairingCode && (
-              <div className="text-center space-y-4">
-                <p className="text-sm text-[#8696A0]">Enter this code in WhatsApp</p>
-                <div className="bg-[#2A3942] p-4 rounded-lg">
-                  <p className="text-3xl font-mono font-bold text-[#00A884] tracking-wider">
-                    {pairingCode}
-                  </p>
-                </div>
-                <p className="text-xs text-[#8696A0]">
-                  Go to WhatsApp &gt; Settings &gt; Linked Devices &gt; Link a Device
-                </p>
-                <button
-                  onClick={() => {
-                    setShowConnectModal(false);
-                    setPairingCode(null);
-                    setConnectingSession(null);
-                  }}
-                  className="px-4 py-2 text-[#8696A0] hover:text-[#E9EDEF] text-sm transition-colors"
-                >
-                  Close
-                </button>
-              </div>
-            )}
           </div>
         </div>
       )}

@@ -27,6 +27,7 @@ const apiKeyRoutes = require('./routes/apiKeys');
 const auditRoutes = require('./routes/audit');
 const healthRoutes = require('./routes/health');
 const migrationRoutes = require('./routes/migration');
+const webhookReceiverRoutes = require('./routes/webhook-receiver');
 
 const app = express();
 const server = http.createServer(app);
@@ -49,6 +50,7 @@ app.use(cors({
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
+
 // Make io and prisma available
 app.set('io', io);
 app.set('prisma', prisma);
@@ -58,6 +60,9 @@ setupSwagger(app);
 
 // Health (no auth)
 app.use('/api/health', healthRoutes);
+
+// Webhook receiver from Meta (NO auth - Meta needs to access it directly)
+app.use('/webhook', webhookReceiverRoutes);
 
 // API routes with auth
 app.use('/api/keys', authMiddleware('master'), apiKeyRoutes);
@@ -80,9 +85,10 @@ initializeSocket(io);
 
 const PORT = process.env.PORT || 3001;
 server.listen(PORT, process.env.HOST || '0.0.0.0', () => {
-  console.log(`🚀 WA API Gateway running on http://localhost:${PORT}`);
+  console.log(`🚀 WA Cloud API Gateway running on http://localhost:${PORT}`);
   console.log(`📖 Swagger docs: http://localhost:${PORT}/api-docs`);
   console.log(`🔑 Master key required for /api/keys endpoints`);
+  console.log(`📡 Meta webhook receiver: http://localhost:${PORT}/webhook`);
 });
 
 // Graceful shutdown

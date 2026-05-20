@@ -39,28 +39,28 @@ export async function fetchApi(endpoint: string, options: FetchOptions = {}, api
 export const sessions = {
   list: (apiKey?: string) => fetchApi('/sessions', {}, apiKey),
   get: (id: string, apiKey?: string) => fetchApi(`/sessions/${id}`, {}, apiKey),
-  create: (data: { name: string; proxyUrl?: string }, apiKey?: string) =>
+  create: (data: { name: string; phoneNumberId: string; accessToken: string; waBusinessId?: string }, apiKey?: string) =>
     fetchApi('/sessions', { method: 'POST', body: JSON.stringify(data) }, apiKey),
-  connect: (id: string, method?: string, phoneNumber?: string, apiKey?: string) =>
-    fetchApi(`/sessions/${id}/connect`, {
-      method: 'POST',
-      body: JSON.stringify({ method: method || 'qr', phoneNumber }),
-    }, apiKey),
+  connect: (id: string, apiKey?: string) =>
+    fetchApi(`/sessions/${id}/connect`, { method: 'POST' }, apiKey),
   disconnect: (id: string, apiKey?: string) =>
     fetchApi(`/sessions/${id}/disconnect`, { method: 'POST' }, apiKey),
   delete: (id: string, apiKey?: string) =>
     fetchApi(`/sessions/${id}`, { method: 'DELETE' }, apiKey),
+  verifyToken: (id: string, apiKey?: string) =>
+    fetchApi(`/sessions/${id}/status`, {}, apiKey),
 };
 
 // Messages
 export const messages = {
-  send: (sessionId: string, data: { to: string; text: string }, apiKey?: string) =>
-    fetchApi(`/sessions/${sessionId}/messages/send`, {
-      method: 'POST',
-      body: JSON.stringify(data),
-    }, apiKey),
-  list: (sessionId: string, apiKey?: string) =>
-    fetchApi(`/sessions/${sessionId}/messages`, {}, apiKey),
+  sendText: (data: { sessionId: string; to: string; text: string }, apiKey?: string) =>
+    fetchApi('/messages/text', { method: 'POST', body: JSON.stringify(data) }, apiKey),
+  sendMedia: (data: { sessionId: string; to: string; type: string; mediaUrl: string; caption?: string }, apiKey?: string) =>
+    fetchApi('/messages/media', { method: 'POST', body: JSON.stringify(data) }, apiKey),
+  sendTemplate: (data: { sessionId: string; to: string; templateName: string; languageCode?: string; components?: unknown[] }, apiKey?: string) =>
+    fetchApi('/messages/template', { method: 'POST', body: JSON.stringify(data) }, apiKey),
+  list: (sessionId: string, jid: string, apiKey?: string) =>
+    fetchApi(`/messages/${sessionId}/${jid}`, {}, apiKey),
 };
 
 // Contacts

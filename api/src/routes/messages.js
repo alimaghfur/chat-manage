@@ -3,8 +3,9 @@ const { PrismaClient } = require('@prisma/client');
 const {
   sendTextMessage,
   sendMediaMessage,
+  sendTemplateMessage,
   sendReaction,
-  getSession,
+  markAsRead,
   isSessionConnected,
 } = require('../services/whatsapp');
 
@@ -15,44 +16,13 @@ const prisma = new PrismaClient();
  * /api/messages/text:
  *   post:
  *     summary: Send a text message
- *     description: Send a text message through a connected WhatsApp session
  *     tags: [Messages]
  *     security:
  *       - ApiKeyAuth: []
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             required:
- *               - sessionId
- *               - to
- *               - text
- *             properties:
- *               sessionId:
- *                 type: string
- *                 description: Session ID to send from
- *               to:
- *                 type: string
- *                 description: Recipient JID (e.g., 5511999999999@s.whatsapp.net)
- *               text:
- *                 type: string
- *                 description: Message text content
- *               quotedMsgId:
- *                 type: string
- *                 description: Message ID to quote/reply to
- *     responses:
- *       200:
- *         description: Message sent successfully
- *       400:
- *         description: Validation error
- *       404:
- *         description: Session not found or not connected
  */
 router.post('/text', async (req, res) => {
   try {
-    const { sessionId, to, text, quotedMsgId } = req.body;
+    const { sessionId, to, text } = req.body;
 
     if (!sessionId || !to || !text) {
       return res.status(400).json({
@@ -61,79 +31,49 @@ router.post('/text', async (req, res) => {
       });
     }
 
-    if (!isSessionConnected(sessionId)) {
+    const connected = await isSessionConnected(sessionId);
+    if (!connected) {
       return res.status(404).json({
         success: false,
-        error: 'Session not found or not connected',
+        error: 'Session not found or not configured',
       });
     }
 
-    const result = await sendTextMessage(sessionId, to, text, { quotedMsgId });
+    const result = await sendTextMessage(sessionId, to, text);
+    const waMessageId = result.messages?.[0]?.id || null;
 
     // Save to database
     const message = await prisma.message.create({
       data: {
         sessionId,
         jid: to,
-        messageId: result.key.id,
+        messageId: waMessageId,
         content: text,
         type: 'text',
         fromMe: true,
         status: 'sent',
         timestamp: new Date(),
-        quotedMsgId: quotedMsgId || null,
       },
     });
 
-    res.json({ success: true, data: { message, whatsappResult: result.key } });
+    res.json({ success: true, data: { message, waMessageId } });
   } catch (error) {
-    const status = error.statusCode || 500;
-    res.status(status).json({ success: false, error: error.message });
+    const status = error.statusCode || error.response?.status || 500;
+    const msg = error.response?.data?.error?.message || error.message;
+    res.status(status).json({ success: false, error: msg });
   }
 });
+
+
 
 /**
  * @swagger
  * /api/messages/media:
  *   post:
  *     summary: Send a media message
- *     description: Send an image, video, document, or audio through WhatsApp
  *     tags: [Messages]
  *     security:
  *       - ApiKeyAuth: []
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             required:
- *               - sessionId
- *               - to
- *               - type
- *               - mediaUrl
- *             properties:
- *               sessionId:
- *                 type: string
- *               to:
- *                 type: string
- *               type:
- *                 type: string
- *                 enum: [image, video, document, audio]
- *               mediaUrl:
- *                 type: string
- *                 description: URL of the media file to send
- *               caption:
- *                 type: string
- *               mimeType:
- *                 type: string
- *               fileName:
- *                 type: string
- *     responses:
- *       200:
- *         description: Media message sent successfully
- *       400:
- *         description: Validation error
  */
 router.post('/media', async (req, res) => {
   try {
@@ -146,21 +86,23 @@ router.post('/media', async (req, res) => {
       });
     }
 
-    if (!isSessionConnected(sessionId)) {
+    const connected = await isSessionConnected(sessionId);
+    if (!connected) {
       return res.status(404).json({
         success: false,
-        error: 'Session not found or not connected',
+        error: 'Session not found or not configured',
       });
     }
 
     const result = await sendMediaMessage(sessionId, to, type, mediaUrl, caption, mimeType, fileName);
+    const waMessageId = result.messages?.[0]?.id || null;
 
     // Save to database
     const message = await prisma.message.create({
       data: {
         sessionId,
         jid: to,
-        messageId: result.key.id,
+        messageId: waMessageId,
         content: caption || `[${type}]`,
         type,
         mediaUrl,
@@ -172,48 +114,79 @@ router.post('/media', async (req, res) => {
       },
     });
 
-    res.json({ success: true, data: { message, whatsappResult: result.key } });
+    res.json({ success: true, data: { message, waMessageId } });
   } catch (error) {
-    const status = error.statusCode || 500;
-    res.status(status).json({ success: false, error: error.message });
+    const status = error.statusCode || error.response?.status || 500;
+    const msg = error.response?.data?.error?.message || error.message;
+    res.status(status).json({ success: false, error: msg });
   }
 });
+
+
+
+/**
+ * @swagger
+ * /api/messages/template:
+ *   post:
+ *     summary: Send a template message
+ *     tags: [Messages]
+ *     security:
+ *       - ApiKeyAuth: []
+ */
+router.post('/template', async (req, res) => {
+  try {
+    const { sessionId, to, templateName, languageCode, components } = req.body;
+
+    if (!sessionId || !to || !templateName) {
+      return res.status(400).json({
+        success: false,
+        error: 'sessionId, to, and templateName are required',
+      });
+    }
+
+    const connected = await isSessionConnected(sessionId);
+    if (!connected) {
+      return res.status(404).json({
+        success: false,
+        error: 'Session not found or not configured',
+      });
+    }
+
+    const result = await sendTemplateMessage(sessionId, to, templateName, languageCode, components);
+    const waMessageId = result.messages?.[0]?.id || null;
+
+    // Save to database
+    const message = await prisma.message.create({
+      data: {
+        sessionId,
+        jid: to,
+        messageId: waMessageId,
+        content: `[Template: ${templateName}]`,
+        type: 'text',
+        fromMe: true,
+        status: 'sent',
+        timestamp: new Date(),
+      },
+    });
+
+    res.json({ success: true, data: { message, waMessageId } });
+  } catch (error) {
+    const status = error.statusCode || error.response?.status || 500;
+    const msg = error.response?.data?.error?.message || error.message;
+    res.status(status).json({ success: false, error: msg });
+  }
+});
+
+
 
 /**
  * @swagger
  * /api/messages/reaction:
  *   post:
  *     summary: Send a reaction
- *     description: React to a message with an emoji
  *     tags: [Messages]
  *     security:
  *       - ApiKeyAuth: []
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             required:
- *               - sessionId
- *               - to
- *               - messageId
- *               - emoji
- *             properties:
- *               sessionId:
- *                 type: string
- *               to:
- *                 type: string
- *               messageId:
- *                 type: string
- *               emoji:
- *                 type: string
- *                 example: "👍"
- *     responses:
- *       200:
- *         description: Reaction sent
- *       400:
- *         description: Validation error
  */
 router.post('/reaction', async (req, res) => {
   try {
@@ -226,21 +199,72 @@ router.post('/reaction', async (req, res) => {
       });
     }
 
-    if (!isSessionConnected(sessionId)) {
+    const connected = await isSessionConnected(sessionId);
+    if (!connected) {
       return res.status(404).json({
         success: false,
-        error: 'Session not found or not connected',
+        error: 'Session not found or not configured',
       });
     }
 
     const result = await sendReaction(sessionId, to, messageId, emoji);
+    const waMessageId = result.messages?.[0]?.id || null;
 
-    res.json({ success: true, data: { whatsappResult: result.key } });
+    res.json({ success: true, data: { waMessageId } });
   } catch (error) {
-    const status = error.statusCode || 500;
-    res.status(status).json({ success: false, error: error.message });
+    const status = error.statusCode || error.response?.status || 500;
+    const msg = error.response?.data?.error?.message || error.message;
+    res.status(status).json({ success: false, error: msg });
   }
 });
+
+
+
+/**
+ * @swagger
+ * /api/messages/read:
+ *   post:
+ *     summary: Mark a message as read
+ *     tags: [Messages]
+ *     security:
+ *       - ApiKeyAuth: []
+ */
+router.post('/read', async (req, res) => {
+  try {
+    const { sessionId, messageId } = req.body;
+
+    if (!sessionId || !messageId) {
+      return res.status(400).json({
+        success: false,
+        error: 'sessionId and messageId are required',
+      });
+    }
+
+    const connected = await isSessionConnected(sessionId);
+    if (!connected) {
+      return res.status(404).json({
+        success: false,
+        error: 'Session not found or not configured',
+      });
+    }
+
+    const result = await markAsRead(sessionId, messageId);
+
+    // Update message status in DB
+    await prisma.message.updateMany({
+      where: { sessionId, messageId },
+      data: { status: 'read' },
+    });
+
+    res.json({ success: true, data: result });
+  } catch (error) {
+    const status = error.statusCode || error.response?.status || 500;
+    const msg = error.response?.data?.error?.message || error.message;
+    res.status(status).json({ success: false, error: msg });
+  }
+});
+
+
 
 // POST /bulk - Bulk send messages
 router.post('/bulk', async (req, res) => {
@@ -254,17 +278,16 @@ router.post('/bulk', async (req, res) => {
       });
     }
 
-    if (!isSessionConnected(sessionId)) {
+    const connected = await isSessionConnected(sessionId);
+    if (!connected) {
       return res.status(404).json({
         success: false,
-        error: 'Session not found or not connected',
+        error: 'Session not found or not configured',
       });
     }
 
-    // Start sending in background
-    const results = { sent: 0, failed: 0, total: recipients.length };
-
     // Process asynchronously
+    const results = { sent: 0, failed: 0, total: recipients.length };
     (async () => {
       for (const recipient of recipients) {
         try {
@@ -273,7 +296,6 @@ router.post('/bulk', async (req, res) => {
         } catch (err) {
           results.failed++;
         }
-        // Delay between messages to avoid rate limiting
         if (delay > 0) {
           await new Promise((resolve) => setTimeout(resolve, delay));
         }

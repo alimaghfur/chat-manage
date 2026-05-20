@@ -1,6 +1,5 @@
 const router = require('express').Router();
 const { PrismaClient } = require('@prisma/client');
-const { sessions } = require('../services/whatsapp');
 
 const prisma = new PrismaClient();
 
@@ -9,35 +8,11 @@ const prisma = new PrismaClient();
  * /api/health:
  *   get:
  *     summary: Health check
- *     description: Returns overall system health status including uptime, version, and session counts
+ *     description: Returns overall system health status
  *     tags: [Health]
  *     responses:
  *       200:
  *         description: System is healthy
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 status:
- *                   type: string
- *                   example: ok
- *                 uptime:
- *                   type: number
- *                   example: 12345.67
- *                 timestamp:
- *                   type: string
- *                   format: date-time
- *                 version:
- *                   type: string
- *                   example: "2.0.0"
- *                 sessions:
- *                   type: object
- *                   properties:
- *                     total:
- *                       type: integer
- *                     connected:
- *                       type: integer
  */
 router.get('/', async (req, res) => {
   try {
@@ -50,7 +25,8 @@ router.get('/', async (req, res) => {
       status: 'ok',
       uptime: process.uptime(),
       timestamp: new Date().toISOString(),
-      version: '2.0.0',
+      version: '3.0.0',
+      engine: 'cloud-api',
       sessions: {
         total: totalSessions,
         connected: connectedSessions,
@@ -61,11 +37,9 @@ router.get('/', async (req, res) => {
       status: 'ok',
       uptime: process.uptime(),
       timestamp: new Date().toISOString(),
-      version: '2.0.0',
-      sessions: {
-        total: sessions.size,
-        connected: [...sessions.values()].filter((s) => s.sock?.user).length,
-      },
+      version: '3.0.0',
+      engine: 'cloud-api',
+      sessions: { total: 0, connected: 0 },
     });
   }
 });
@@ -75,37 +49,7 @@ router.get('/', async (req, res) => {
  * /api/health/ready:
  *   get:
  *     summary: Readiness probe
- *     description: Checks database connectivity. Returns 200 if ready, 503 if not.
  *     tags: [Health]
- *     responses:
- *       200:
- *         description: Service is ready
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 ready:
- *                   type: boolean
- *                   example: true
- *                 database:
- *                   type: string
- *                   example: connected
- *       503:
- *         description: Service is not ready
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 ready:
- *                   type: boolean
- *                   example: false
- *                 database:
- *                   type: string
- *                   example: disconnected
- *                 error:
- *                   type: string
  */
 router.get('/ready', async (req, res) => {
   try {
@@ -123,9 +67,10 @@ router.get('/ready', async (req, res) => {
   }
 });
 
+
+
 /**
  * Verify API key endpoint (no auth middleware required)
- * Dashboard uses this to validate key before entering
  */
 router.post('/verify-key', async (req, res) => {
   try {

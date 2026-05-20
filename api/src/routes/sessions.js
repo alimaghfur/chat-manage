@@ -1,10 +1,10 @@
 const router = require('express').Router();
 const { PrismaClient } = require('@prisma/client');
 const {
-  createSession,
-  disconnectSession,
   isSessionConnected,
   getSession,
+  verifyToken,
+  getBusinessProfile,
 } = require('../services/whatsapp');
 
 const prisma = new PrismaClient();
@@ -14,34 +14,13 @@ const prisma = new PrismaClient();
  * /api/sessions:
  *   get:
  *     summary: List all sessions
- *     description: Retrieve all WhatsApp sessions with their current status
+ *     description: Retrieve all WhatsApp Cloud API sessions
  *     tags: [Sessions]
  *     security:
  *       - ApiKeyAuth: []
  *     responses:
  *       200:
  *         description: List of sessions
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 success:
- *                   type: boolean
- *                 data:
- *                   type: array
- *                   items:
- *                     type: object
- *                     properties:
- *                       id:
- *                         type: string
- *                       name:
- *                         type: string
- *                       status:
- *                         type: string
- *                         enum: [connected, disconnected, connecting]
- *                       phone:
- *                         type: string
  */
 router.get('/', async (req, res) => {
   try {
@@ -49,10 +28,13 @@ router.get('/', async (req, res) => {
       orderBy: { createdAt: 'desc' },
     });
 
-    const data = sessions.map((session) => ({
-      ...session,
-      isConnected: isSessionConnected(session.id),
-    }));
+    const data = await Promise.all(
+      sessions.map(async (session) => ({
+        ...session,
+        accessToken: session.accessToken ? '••••••' : null, // mask token
+        isConnected: await isSessionConnected(session.id),
+      }))
+    );
 
     res.json({ success: true, data });
   } catch (error) {
@@ -95,7 +77,8 @@ router.get('/:id', async (req, res) => {
       success: true,
       data: {
         ...session,
-        isConnected: isSessionConnected(session.id),
+        accessToken: session.accessToken ? '••••••' : null,
+        isConnected: await isSessionConnected(session.id),
       },
     });
   } catch (error) {
@@ -108,7 +91,7 @@ router.get('/:id', async (req, res) => {
  * /api/sessions:
  *   post:
  *     summary: Create a new session
- *     description: Create a new WhatsApp session entry in the database
+ *     description: Create a new WhatsApp Cloud API session configuration
  *     tags: [Sessions]
  *     security:
  *       - ApiKeyAuth: []
@@ -120,16 +103,23 @@ router.get('/:id', async (req, res) => {
  *             type: object
  *             required:
  *               - name
+ *               - phoneNumberId
+ *               - accessToken
  *             properties:
  *               name:
  *                 type: string
- *                 example: "My WhatsApp"
- *               proxyUrl:
+ *                 example: "My Business"
+ *               phoneNumberId:
  *                 type: string
- *                 example: "socks5://user:pass@host:port"
+ *                 example: "123456789012345"
+ *               accessToken:
+ *                 type: string
+ *                 example: "EAABx..."
+ *               waBusinessId:
+ *                 type: string
+ *                 example: "987654321098765"
  *               webhookUrl:
  *                 type: string
- *                 example: "https://example.com/webhook"
  *     responses:
  *       201:
  *         description: Session created
@@ -138,22 +128,37 @@ router.get('/:id', async (req, res) => {
  */
 router.post('/', async (req, res) => {
   try {
-    const { name, proxyUrl, webhookUrl } = req.body;
+    const { name, phoneNumberId, accessToken, waBusinessId, webhookUrl } = req.body;
 
     if (!name) {
       return res.status(400).json({ success: false, error: 'Name is required' });
     }
 
+    if (!phoneNumberId || !accessToken) {
+      return res.status(400).json({
+        success: false,
+        error: 'phoneNumberId and accessToken are required',
+      });
+    }
+
     const session = await prisma.session.create({
       data: {
         name,
-        proxyUrl: proxyUrl || null,
+        phoneNumberId,
+        accessToken,
+        waBusinessId: waBusinessId || null,
         webhookUrl: webhookUrl || null,
-        status: 'disconnected',
+        status: 'connected', // Cloud API sessions are always "connected" if token is valid
       },
     });
 
-    res.status(201).json({ success: true, data: session });
+    res.status(201).json({
+      success: true,
+      data: {
+        ...session,
+        accessToken: '••••••',
+      },
+    });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
@@ -163,8 +168,8 @@ router.post('/', async (req, res) => {
  * @swagger
  * /api/sessions/{id}/connect:
  *   post:
- *     summary: Connect a session
- *     description: Initiate WhatsApp connection via QR code or pairing code
+ *     summary: Verify and connect a session
+ *     description: Verify the Cloud API token works by calling the Graph API
  *     tags: [Sessions]
  *     security:
  *       - ApiKeyAuth: []
@@ -174,70 +179,85 @@ router.post('/', async (req, res) => {
  *         required: true
  *         schema:
  *           type: string
- *     requestBody:
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             properties:
- *               method:
- *                 type: string
- *                 enum: [qr, pairing]
- *                 default: qr
- *               phoneNumber:
- *                 type: string
- *                 description: Required when method is 'pairing'
  *     responses:
  *       200:
- *         description: Connection initiated
+ *         description: Token verified, session connected
  *       404:
  *         description: Session not found
  */
 router.post('/:id/connect', async (req, res) => {
   try {
     const { id } = req.params;
-    const { method = 'qr', phoneNumber } = req.body;
 
     const session = await prisma.session.findUnique({ where: { id } });
     if (!session) {
       return res.status(404).json({ success: false, error: 'Session not found' });
     }
 
-    if (isSessionConnected(id)) {
-      return res.status(400).json({ success: false, error: 'Session is already connected' });
-    }
-
-    const io = req.app.get('io');
-    const usePairingCode = method === 'pairing';
-
-    if (usePairingCode && !phoneNumber) {
+    if (!session.phoneNumberId || !session.accessToken) {
       return res.status(400).json({
         success: false,
-        error: 'Phone number is required for pairing code method',
+        error: 'Session is missing phoneNumberId or accessToken',
       });
     }
 
-    await createSession(id, io, {
-      usePairingCode,
-      phoneNumber,
-      proxyUrl: session.proxyUrl,
-    });
+    // Verify token by calling the Graph API
+    const phoneInfo = await verifyToken(session.phoneNumberId, session.accessToken);
 
+    // Update session status and phone number
     await prisma.session.update({
       where: { id },
-      data: { status: 'connecting' },
+      data: {
+        status: 'connected',
+        phone: phoneInfo.display_phone_number || phoneInfo.verified_name || null,
+      },
     });
 
     res.json({
       success: true,
-      message: `Connection initiated via ${method}. Listen on WebSocket for updates.`,
+      message: 'Token verified. Session is connected.',
+      data: {
+        phoneNumber: phoneInfo.display_phone_number || null,
+        verifiedName: phoneInfo.verified_name || null,
+        qualityRating: phoneInfo.quality_rating || null,
+      },
     });
   } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+    // If verification fails, mark as disconnected
+    await prisma.session.update({
+      where: { id: req.params.id },
+      data: { status: 'disconnected' },
+    }).catch(() => {});
+
+    const status = error.response?.status || error.statusCode || 500;
+    res.status(status).json({
+      success: false,
+      error: error.response?.data?.error?.message || error.message || 'Token verification failed',
+    });
   }
 });
 
-// POST /:id/disconnect - Disconnect session
+/**
+ * @swagger
+ * /api/sessions/{id}/disconnect:
+ *   post:
+ *     summary: Disconnect a session
+ *     description: Mark session as disconnected (Cloud API - just updates status)
+ *     tags: [Sessions]
+ *     security:
+ *       - ApiKeyAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Session disconnected
+ *       404:
+ *         description: Session not found
+ */
 router.post('/:id/disconnect', async (req, res) => {
   try {
     const { id } = req.params;
@@ -247,7 +267,10 @@ router.post('/:id/disconnect', async (req, res) => {
       return res.status(404).json({ success: false, error: 'Session not found' });
     }
 
-    await disconnectSession(id);
+    await prisma.session.update({
+      where: { id },
+      data: { status: 'disconnected' },
+    });
 
     res.json({ success: true, message: 'Session disconnected' });
   } catch (error) {
@@ -265,11 +288,6 @@ router.delete('/:id', async (req, res) => {
       return res.status(404).json({ success: false, error: 'Session not found' });
     }
 
-    // Disconnect if connected
-    if (isSessionConnected(id)) {
-      await disconnectSession(id);
-    }
-
     // Delete from database (cascades to related records)
     await prisma.session.delete({ where: { id } });
 
@@ -283,7 +301,7 @@ router.delete('/:id', async (req, res) => {
 router.patch('/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, proxyUrl, webhookUrl } = req.body;
+    const { name, phoneNumberId, accessToken, waBusinessId, webhookUrl } = req.body;
 
     const session = await prisma.session.findUnique({ where: { id } });
     if (!session) {
@@ -292,7 +310,9 @@ router.patch('/:id', async (req, res) => {
 
     const updateData = {};
     if (name !== undefined) updateData.name = name;
-    if (proxyUrl !== undefined) updateData.proxyUrl = proxyUrl;
+    if (phoneNumberId !== undefined) updateData.phoneNumberId = phoneNumberId;
+    if (accessToken !== undefined) updateData.accessToken = accessToken;
+    if (waBusinessId !== undefined) updateData.waBusinessId = waBusinessId;
     if (webhookUrl !== undefined) updateData.webhookUrl = webhookUrl;
 
     const updated = await prisma.session.update({
@@ -300,13 +320,39 @@ router.patch('/:id', async (req, res) => {
       data: updateData,
     });
 
-    res.json({ success: true, data: updated });
+    res.json({
+      success: true,
+      data: {
+        ...updated,
+        accessToken: updated.accessToken ? '••••••' : null,
+      },
+    });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
 });
 
-// GET /:id/status - Get real-time status
+/**
+ * @swagger
+ * /api/sessions/{id}/status:
+ *   get:
+ *     summary: Get session status
+ *     description: Check if the session token is still valid
+ *     tags: [Sessions]
+ *     security:
+ *       - ApiKeyAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Session status
+ *       404:
+ *         description: Session not found
+ */
 router.get('/:id/status', async (req, res) => {
   try {
     const { id } = req.params;
@@ -316,8 +362,18 @@ router.get('/:id/status', async (req, res) => {
       return res.status(404).json({ success: false, error: 'Session not found' });
     }
 
-    const connected = isSessionConnected(id);
-    const activeSession = getSession(id);
+    const connected = await isSessionConnected(id);
+
+    let tokenValid = false;
+    let phoneInfo = null;
+    if (session.phoneNumberId && session.accessToken) {
+      try {
+        phoneInfo = await verifyToken(session.phoneNumberId, session.accessToken);
+        tokenValid = true;
+      } catch (err) {
+        tokenValid = false;
+      }
+    }
 
     res.json({
       success: true,
@@ -326,8 +382,13 @@ router.get('/:id/status', async (req, res) => {
         name: session.name,
         status: connected ? 'connected' : session.status,
         isConnected: connected,
+        tokenValid,
         phone: session.phone,
-        user: activeSession?.sock?.user || null,
+        phoneInfo: phoneInfo ? {
+          displayPhoneNumber: phoneInfo.display_phone_number,
+          verifiedName: phoneInfo.verified_name,
+          qualityRating: phoneInfo.quality_rating,
+        } : null,
       },
     });
   } catch (error) {
