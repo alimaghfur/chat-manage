@@ -200,33 +200,20 @@ class WhatsAppBaileysAdapter extends BasePlatform {
 
     // ==================== MESSAGE HANDLERS ====================
 
-    // Incoming message
+    // Incoming message (from others only)
     client.on('message', async (msg) => {
       try {
+        // Only handle messages FROM others, not from ourselves
+        if (msg.fromMe) return;
         await this._handleIncomingMessage(msg, io, false);
       } catch (err) {
         console.error(`[WhatsApp] Message handler error:`, err.message);
       }
     });
 
-    // Outgoing message (sent by us from phone - NOT from API)
-    client.on('message_create', async (msg) => {
-      if (msg.fromMe) {
-        try {
-          // Skip if this message was already saved by our API (sent via dashboard/API)
-          const msgId = msg.id?.id || msg.id?._serialized;
-          if (msgId) {
-            const existing = await prisma.message.findFirst({
-              where: { sessionId: this.sessionId, externalMsgId: msgId },
-            });
-            if (existing) return; // Already saved by sendText/sendMedia route
-          }
-          await this._handleIncomingMessage(msg, io, true);
-        } catch (err) {
-          console.error(`[WhatsApp] Outgoing message handler error:`, err.message);
-        }
-      }
-    });
+    // NOTE: We intentionally do NOT listen to 'message_create' event.
+    // Messages sent via our API are already saved by the /messages/text route.
+    // This prevents the duplicate message issue.
 
     // Message ACK (status updates: sent, delivered, read)
     client.on('message_ack', async (msg, ack) => {
