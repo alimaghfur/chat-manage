@@ -5,6 +5,7 @@ import Layout from '@/components/Layout';
 import DashboardView from '@/components/DashboardView';
 import SessionsView from '@/components/SessionsView';
 import MessagesView from '@/components/MessagesView';
+import InboxView from '@/components/InboxView';
 import WebhooksView from '@/components/WebhooksView';
 import ApiKeysView from '@/components/ApiKeysView';
 
@@ -68,9 +69,9 @@ export default function Home() {
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z" />
             </svg>
           </div>
-          <h1 className="text-xl font-bold text-[#E9EDEF] mb-2">WhatsApp API Dashboard</h1>
+          <h1 className="text-xl font-bold text-[#E9EDEF] mb-2">Multi-Platform Chat Manager</h1>
           <p className="text-[#8696A0] text-sm mb-6">
-            Masukkan API Key atau Master Key untuk mengakses dashboard
+            Manage WhatsApp, Telegram, Instagram, & Messenger in one dashboard
           </p>
           <input
             type="text"
@@ -100,6 +101,8 @@ export default function Home() {
     switch (activeView) {
       case 'dashboard':
         return <DashboardView apiKey={apiKey} onViewChange={setActiveView} />;
+      case 'inbox':
+        return <InboxView apiKey={apiKey} />;
       case 'sessions':
         return <SessionsView apiKey={apiKey} />;
       case 'messages':

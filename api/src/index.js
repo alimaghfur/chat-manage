@@ -61,7 +61,7 @@ setupSwagger(app);
 // Health (no auth)
 app.use('/api/health', healthRoutes);
 
-// Webhook receiver from Meta (NO auth - Meta needs to access it directly)
+// Webhook receivers (NO auth - platforms need to access directly)
 app.use('/webhook', webhookReceiverRoutes);
 
 // API routes with auth
@@ -85,10 +85,15 @@ initializeSocket(io);
 
 const PORT = process.env.PORT || 3001;
 server.listen(PORT, process.env.HOST || '0.0.0.0', () => {
-  console.log(`🚀 WA Cloud API Gateway running on http://localhost:${PORT}`);
+  console.log(`🚀 Multi-Platform Chat Gateway running on http://localhost:${PORT}`);
   console.log(`📖 Swagger docs: http://localhost:${PORT}/api-docs`);
   console.log(`🔑 Master key required for /api/keys endpoints`);
-  console.log(`📡 Meta webhook receiver: http://localhost:${PORT}/webhook`);
+  console.log(`📡 Webhook receivers:`);
+  console.log(`   WhatsApp:  http://localhost:${PORT}/webhook/whatsapp`);
+  console.log(`   Telegram:  http://localhost:${PORT}/webhook/telegram/:botToken`);
+  console.log(`   Instagram: http://localhost:${PORT}/webhook/instagram`);
+  console.log(`   Messenger: http://localhost:${PORT}/webhook/messenger`);
+  console.log(`   Legacy:    http://localhost:${PORT}/webhook (auto-detect platform)`);
 });
 
 // Graceful shutdown

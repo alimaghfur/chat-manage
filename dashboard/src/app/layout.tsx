@@ -5,8 +5,8 @@ import './globals.css';
 const inter = Inter({ subsets: ['latin'] });
 
 export const metadata: Metadata = {
-  title: 'WhatsApp API Dashboard',
-  description: 'Web Dashboard for WhatsApp API Gateway',
+  title: 'Chat Manager - Multi-Platform',
+  description: 'Manage WhatsApp, Telegram, Instagram, & Messenger in one place',
 };
 
 export default function RootLayout({

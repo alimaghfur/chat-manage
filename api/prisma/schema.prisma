@@ -25,20 +25,32 @@ model ApiKey {
   auditLogs   AuditLog[]
 }
 
-// ==================== SESSIONS ====================
+// ==================== SESSIONS (MULTI-PLATFORM) ====================
 
 model Session {
   id          String   @id @default(cuid())
   name        String
+  platform    String   @default("whatsapp") // whatsapp, telegram, instagram, messenger
   phone       String?
   status      String   @default("disconnected") // connected, disconnected, connecting
+
+  // === Platform Credentials (stored as JSON for flexibility) ===
+  // WhatsApp: { phoneNumberId, accessToken, waBusinessId }
+  // Telegram: { botToken, botUsername }
+  // Instagram: { accessToken, igUserId, pageId }
+  // Messenger: { pageAccessToken, pageId, appSecret }
+  credentials String?  // JSON - platform-specific credentials
+
+  // Legacy WhatsApp fields (kept for backward compat, will be read from credentials)
   phoneNumberId String?  // WhatsApp Business Phone Number ID
-  accessToken   String?  // Meta API access token
+  accessToken   String?  // Meta API access token / Telegram bot token
   waBusinessId  String?  // WhatsApp Business Account ID
+
   webhookVerifyToken String? // Token for webhook verification
-  proxyUrl    String?  // per-session proxy (socks5://user:pass@host:port)
+  proxyUrl    String?  // per-session proxy
   webhookUrl  String?  // per-session webhook override
   metadata    String?  // JSON extra data
+  avatar      String?  // Platform avatar/profile picture URL
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
@@ -55,10 +67,11 @@ model Session {
 model Contact {
   id          String   @id @default(cuid())
   sessionId   String
-  jid         String
+  platformId  String   // Platform-specific identifier (jid, chat_id, ig_user_id, psid)
   name        String?
   pushName    String?
-  phone       String
+  phone       String?
+  username    String?  // Telegram username, Instagram handle
   avatar      String?
   isGroup     Boolean  @default(false)
   metadata    String?  // JSON
@@ -68,36 +81,37 @@ model Contact {
   session     Session  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
   messages    Message[]
 
-  @@unique([sessionId, jid])
+  @@unique([sessionId, platformId])
   @@index([phone])
+  @@index([username])
 }
 
 // ==================== MESSAGES ====================
 
 model Message {
-  id          String   @id @default(cuid())
-  sessionId   String
-  contactId   String?
-  jid         String
-  content     String
-  type        String   @default("text") // text, image, video, document, audio, sticker, reaction, location
-  mediaUrl    String?
-  mimeType    String?
-  fileName    String?
-  fromMe      Boolean  @default(false)
-  status      String   @default("pending") // pending, sent, delivered, read, failed, received
-  timestamp   DateTime @default(now())
-  messageId   String?  // WhatsApp message ID
-  quotedMsgId String?  // reply to message
-  metadata    String?  // JSON (reactions, etc)
-  createdAt   DateTime @default(now())
+  id            String   @id @default(cuid())
+  sessionId     String
+  contactId     String?
+  platformId    String   // Platform-specific chat/conversation ID
+  content       String
+  type          String   @default("text") // text, image, video, document, audio, sticker, reaction, location, contact, template
+  mediaUrl      String?
+  mimeType      String?
+  fileName      String?
+  fromMe        Boolean  @default(false)
+  status        String   @default("pending") // pending, sent, delivered, read, failed, received
+  timestamp     DateTime @default(now())
+  externalMsgId String?  // Platform message ID (wa msg id, telegram msg id, etc)
+  quotedMsgId   String?  // reply to message
+  metadata      String?  // JSON (reactions, buttons, etc)
+  createdAt     DateTime @default(now())
 
   session     Session  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
   contact     Contact? @relation(fields: [contactId], references: [id], onDelete: SetNull)
 
-  @@index([sessionId, jid])
+  @@index([sessionId, platformId])
   @@index([timestamp])
-  @@index([messageId])
+  @@index([externalMsgId])
 }
 
 // ==================== GROUPS ====================
@@ -105,7 +119,7 @@ model Message {
 model Group {
   id            String   @id @default(cuid())
   sessionId     String
-  jid           String
+  platformId    String   // Platform-specific group ID
   name          String
   description   String?
   participants  String   // JSON array
@@ -117,7 +131,7 @@ model Group {
 
   session       Session  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
 
-  @@unique([sessionId, jid])
+  @@unique([sessionId, platformId])
 }
 
 // ==================== LABELS ====================
@@ -127,7 +141,7 @@ model Label {
   sessionId   String
   name        String
   color       String   @default("#25D366")
-  chatJids    String   @default("[]") // JSON array of JIDs
+  chatIds     String   @default("[]") // JSON array of platform IDs
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
@@ -157,7 +171,7 @@ model Broadcast {
   name        String
   message     String
   mediaUrl    String?
-  recipients  String   // JSON array of JIDs
+  recipients  String   // JSON array of platform IDs
   status      String   @default("pending") // pending, sending, completed, failed
   sentCount   Int      @default(0)
   failCount   Int      @default(0)

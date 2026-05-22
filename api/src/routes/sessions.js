@@ -1,40 +1,46 @@
 const router = require('express').Router();
 const { PrismaClient } = require('@prisma/client');
-const {
-  isSessionConnected,
-  getSession,
-  verifyToken,
-  getBusinessProfile,
-} = require('../services/whatsapp');
+const { getPlatformAdapter, createAdapterFromSession, getSupportedPlatforms } = require('../services/platforms');
 
 const prisma = new PrismaClient();
+
+/**
+ * @swagger
+ * /api/sessions/platforms:
+ *   get:
+ *     summary: List supported platforms
+ *     tags: [Sessions]
+ *     security:
+ *       - ApiKeyAuth: []
+ */
+router.get('/platforms', async (req, res) => {
+  res.json({ success: true, data: getSupportedPlatforms() });
+});
 
 /**
  * @swagger
  * /api/sessions:
  *   get:
  *     summary: List all sessions
- *     description: Retrieve all WhatsApp Cloud API sessions
  *     tags: [Sessions]
  *     security:
  *       - ApiKeyAuth: []
- *     responses:
- *       200:
- *         description: List of sessions
  */
 router.get('/', async (req, res) => {
   try {
+    const { platform } = req.query;
+    const where = platform ? { platform } : {};
+
     const sessions = await prisma.session.findMany({
+      where,
       orderBy: { createdAt: 'desc' },
     });
 
-    const data = await Promise.all(
-      sessions.map(async (session) => ({
-        ...session,
-        accessToken: session.accessToken ? '••••••' : null, // mask token
-        isConnected: await isSessionConnected(session.id),
-      }))
-    );
+    const data = sessions.map((session) => ({
+      ...session,
+      accessToken: session.accessToken ? '******' : null,
+      credentials: session.credentials ? '******' : null,
+    }));
 
     res.json({ success: true, data });
   } catch (error) {
@@ -47,21 +53,9 @@ router.get('/', async (req, res) => {
  * /api/sessions/{id}:
  *   get:
  *     summary: Get session by ID
- *     description: Retrieve a single session by its unique identifier
  *     tags: [Sessions]
  *     security:
  *       - ApiKeyAuth: []
- *     parameters:
- *       - in: path
- *         name: id
- *         required: true
- *         schema:
- *           type: string
- *     responses:
- *       200:
- *         description: Session details
- *       404:
- *         description: Session not found
  */
 router.get('/:id', async (req, res) => {
   try {
@@ -77,8 +71,8 @@ router.get('/:id', async (req, res) => {
       success: true,
       data: {
         ...session,
-        accessToken: session.accessToken ? '••••••' : null,
-        isConnected: await isSessionConnected(session.id),
+        accessToken: session.accessToken ? '******' : null,
+        credentials: session.credentials ? '******' : null,
       },
     });
   } catch (error) {
@@ -91,64 +85,47 @@ router.get('/:id', async (req, res) => {
  * /api/sessions:
  *   post:
  *     summary: Create a new session
- *     description: Create a new WhatsApp Cloud API session configuration
+ *     description: Create a session for any supported platform
  *     tags: [Sessions]
  *     security:
  *       - ApiKeyAuth: []
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             required:
- *               - name
- *               - phoneNumberId
- *               - accessToken
- *             properties:
- *               name:
- *                 type: string
- *                 example: "My Business"
- *               phoneNumberId:
- *                 type: string
- *                 example: "123456789012345"
- *               accessToken:
- *                 type: string
- *                 example: "EAABx..."
- *               waBusinessId:
- *                 type: string
- *                 example: "987654321098765"
- *               webhookUrl:
- *                 type: string
- *     responses:
- *       201:
- *         description: Session created
- *       400:
- *         description: Validation error
  */
 router.post('/', async (req, res) => {
   try {
-    const { name, phoneNumberId, accessToken, waBusinessId, webhookUrl } = req.body;
+    const { name, platform = 'whatsapp', credentials, phoneNumberId, accessToken, waBusinessId, webhookUrl } = req.body;
 
     if (!name) {
       return res.status(400).json({ success: false, error: 'Name is required' });
     }
 
-    if (!phoneNumberId || !accessToken) {
+    // Validate platform
+    const supported = getSupportedPlatforms().map((p) => p.id);
+    if (!supported.includes(platform)) {
       return res.status(400).json({
         success: false,
-        error: 'phoneNumberId and accessToken are required',
+        error: `Unsupported platform: ${platform}. Supported: ${supported.join(', ')}`,
       });
+    }
+
+    // Build credentials JSON
+    let credentialsJson = credentials ? JSON.stringify(credentials) : null;
+
+    // Backward compat: if WhatsApp fields provided directly, build credentials
+    if (platform === 'whatsapp' && !credentialsJson && (phoneNumberId || accessToken)) {
+      credentialsJson = JSON.stringify({ phoneNumberId, accessToken, waBusinessId });
     }
 
     const session = await prisma.session.create({
       data: {
         name,
-        phoneNumberId,
-        accessToken,
-        waBusinessId: waBusinessId || null,
+        platform,
+        credentials: credentialsJson,
+        // Legacy WhatsApp fields
+        phoneNumberId: platform === 'whatsapp' ? (credentials?.phoneNumberId || phoneNumberId || null) : null,
+        accessToken: credentials?.accessToken || credentials?.botToken || credentials?.pageAccessToken || accessToken || null,
+        waBusinessId: platform === 'whatsapp' ? (credentials?.waBusinessId || waBusinessId || null) : null,
         webhookUrl: webhookUrl || null,
-        status: 'connected', // Cloud API sessions are always "connected" if token is valid
+        status: 'disconnected',
       },
     });
 
@@ -156,7 +133,8 @@ router.post('/', async (req, res) => {
       success: true,
       data: {
         ...session,
-        accessToken: '••••••',
+        accessToken: '******',
+        credentials: '******',
       },
     });
   } catch (error) {
@@ -168,22 +146,10 @@ router.post('/', async (req, res) => {
  * @swagger
  * /api/sessions/{id}/connect:
  *   post:
- *     summary: Verify and connect a session
- *     description: Verify the Cloud API token works by calling the Graph API
+ *     summary: Verify credentials and connect session
  *     tags: [Sessions]
  *     security:
  *       - ApiKeyAuth: []
- *     parameters:
- *       - in: path
- *         name: id
- *         required: true
- *         schema:
- *           type: string
- *     responses:
- *       200:
- *         description: Token verified, session connected
- *       404:
- *         description: Session not found
  */
 router.post('/:id/connect', async (req, res) => {
   try {
@@ -194,36 +160,44 @@ router.post('/:id/connect', async (req, res) => {
       return res.status(404).json({ success: false, error: 'Session not found' });
     }
 
-    if (!session.phoneNumberId || !session.accessToken) {
+    // Create platform adapter and verify credentials
+    const adapter = createAdapterFromSession(session);
+    const verification = await adapter.verifyCredentials();
+
+    if (!verification.valid) {
+      await prisma.session.update({
+        where: { id },
+        data: { status: 'disconnected' },
+      });
       return res.status(400).json({
         success: false,
-        error: 'Session is missing phoneNumberId or accessToken',
+        error: verification.error || 'Credential verification failed',
       });
     }
 
-    // Verify token by calling the Graph API
-    const phoneInfo = await verifyToken(session.phoneNumberId, session.accessToken);
+    // Update session status
+    const updateData = { status: 'connected' };
 
-    // Update session status and phone number
-    await prisma.session.update({
-      where: { id },
-      data: {
-        status: 'connected',
-        phone: phoneInfo.display_phone_number || phoneInfo.verified_name || null,
-      },
-    });
+    // Extract useful info from verification
+    if (verification.info) {
+      if (verification.info.phoneNumber) updateData.phone = verification.info.phoneNumber;
+      if (verification.info.botUsername) updateData.phone = `@${verification.info.botUsername}`;
+      if (verification.info.username) updateData.phone = `@${verification.info.username}`;
+      if (verification.info.pageName) updateData.phone = verification.info.pageName;
+    }
+
+    await prisma.session.update({ where: { id }, data: updateData });
 
     res.json({
       success: true,
-      message: 'Token verified. Session is connected.',
+      message: `${session.platform} session verified and connected`,
       data: {
-        phoneNumber: phoneInfo.display_phone_number || null,
-        verifiedName: phoneInfo.verified_name || null,
-        qualityRating: phoneInfo.quality_rating || null,
+        platform: session.platform,
+        features: adapter.getFeatures(),
+        info: verification.info,
       },
     });
   } catch (error) {
-    // If verification fails, mark as disconnected
     await prisma.session.update({
       where: { id: req.params.id },
       data: { status: 'disconnected' },
@@ -232,7 +206,7 @@ router.post('/:id/connect', async (req, res) => {
     const status = error.response?.status || error.statusCode || 500;
     res.status(status).json({
       success: false,
-      error: error.response?.data?.error?.message || error.message || 'Token verification failed',
+      error: error.response?.data?.error?.message || error.message,
     });
   }
 });
@@ -242,90 +216,55 @@ router.post('/:id/connect', async (req, res) => {
  * /api/sessions/{id}/disconnect:
  *   post:
  *     summary: Disconnect a session
- *     description: Mark session as disconnected (Cloud API - just updates status)
  *     tags: [Sessions]
- *     security:
- *       - ApiKeyAuth: []
- *     parameters:
- *       - in: path
- *         name: id
- *         required: true
- *         schema:
- *           type: string
- *     responses:
- *       200:
- *         description: Session disconnected
- *       404:
- *         description: Session not found
  */
 router.post('/:id/disconnect', async (req, res) => {
   try {
     const { id } = req.params;
-
     const session = await prisma.session.findUnique({ where: { id } });
     if (!session) {
       return res.status(404).json({ success: false, error: 'Session not found' });
     }
 
-    await prisma.session.update({
-      where: { id },
-      data: { status: 'disconnected' },
-    });
-
+    await prisma.session.update({ where: { id }, data: { status: 'disconnected' } });
     res.json({ success: true, message: 'Session disconnected' });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
 });
 
-// DELETE /:id - Delete session and cleanup
+// DELETE /:id
 router.delete('/:id', async (req, res) => {
   try {
-    const { id } = req.params;
-
-    const session = await prisma.session.findUnique({ where: { id } });
+    const session = await prisma.session.findUnique({ where: { id: req.params.id } });
     if (!session) {
       return res.status(404).json({ success: false, error: 'Session not found' });
     }
-
-    // Delete from database (cascades to related records)
-    await prisma.session.delete({ where: { id } });
-
+    await prisma.session.delete({ where: { id: req.params.id } });
     res.json({ success: true, message: 'Session deleted' });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
 });
 
-// PATCH /:id - Update session
+// PATCH /:id
 router.patch('/:id', async (req, res) => {
   try {
-    const { id } = req.params;
-    const { name, phoneNumberId, accessToken, waBusinessId, webhookUrl } = req.body;
-
-    const session = await prisma.session.findUnique({ where: { id } });
+    const session = await prisma.session.findUnique({ where: { id: req.params.id } });
     if (!session) {
       return res.status(404).json({ success: false, error: 'Session not found' });
     }
 
+    const { name, credentials, webhookUrl } = req.body;
     const updateData = {};
     if (name !== undefined) updateData.name = name;
-    if (phoneNumberId !== undefined) updateData.phoneNumberId = phoneNumberId;
-    if (accessToken !== undefined) updateData.accessToken = accessToken;
-    if (waBusinessId !== undefined) updateData.waBusinessId = waBusinessId;
+    if (credentials !== undefined) updateData.credentials = JSON.stringify(credentials);
     if (webhookUrl !== undefined) updateData.webhookUrl = webhookUrl;
 
-    const updated = await prisma.session.update({
-      where: { id },
-      data: updateData,
-    });
-
+    const updated = await prisma.session.update({ where: { id: req.params.id }, data: updateData });
     res.json({
       success: true,
-      data: {
-        ...updated,
-        accessToken: updated.accessToken ? '••••••' : null,
-      },
+      data: { ...updated, accessToken: '******', credentials: '******' },
     });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
@@ -336,59 +275,37 @@ router.patch('/:id', async (req, res) => {
  * @swagger
  * /api/sessions/{id}/status:
  *   get:
- *     summary: Get session status
- *     description: Check if the session token is still valid
+ *     summary: Get session status and features
  *     tags: [Sessions]
- *     security:
- *       - ApiKeyAuth: []
- *     parameters:
- *       - in: path
- *         name: id
- *         required: true
- *         schema:
- *           type: string
- *     responses:
- *       200:
- *         description: Session status
- *       404:
- *         description: Session not found
  */
 router.get('/:id/status', async (req, res) => {
   try {
-    const { id } = req.params;
-
-    const session = await prisma.session.findUnique({ where: { id } });
+    const session = await prisma.session.findUnique({ where: { id: req.params.id } });
     if (!session) {
       return res.status(404).json({ success: false, error: 'Session not found' });
     }
 
-    const connected = await isSessionConnected(id);
-
+    const adapter = createAdapterFromSession(session);
     let tokenValid = false;
-    let phoneInfo = null;
-    if (session.phoneNumberId && session.accessToken) {
-      try {
-        phoneInfo = await verifyToken(session.phoneNumberId, session.accessToken);
-        tokenValid = true;
-      } catch (err) {
-        tokenValid = false;
-      }
-    }
+    let info = null;
+
+    try {
+      const verification = await adapter.verifyCredentials();
+      tokenValid = verification.valid;
+      info = verification.info;
+    } catch { tokenValid = false; }
 
     res.json({
       success: true,
       data: {
         id: session.id,
         name: session.name,
-        status: connected ? 'connected' : session.status,
-        isConnected: connected,
+        platform: session.platform,
+        status: session.status,
         tokenValid,
         phone: session.phone,
-        phoneInfo: phoneInfo ? {
-          displayPhoneNumber: phoneInfo.display_phone_number,
-          verifiedName: phoneInfo.verified_name,
-          qualityRating: phoneInfo.quality_rating,
-        } : null,
+        features: adapter.getFeatures(),
+        info,
       },
     });
   } catch (error) {

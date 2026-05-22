@@ -35,11 +35,17 @@ export async function fetchApi(endpoint: string, options: FetchOptions = {}, api
   return response.json();
 }
 
+// Platforms
+export const platforms = {
+  list: (apiKey?: string) => fetchApi('/sessions/platforms', {}, apiKey),
+};
+
 // Sessions
 export const sessions = {
-  list: (apiKey?: string) => fetchApi('/sessions', {}, apiKey),
+  list: (apiKey?: string, platform?: string) =>
+    fetchApi('/sessions', { params: platform ? { platform } : undefined }, apiKey),
   get: (id: string, apiKey?: string) => fetchApi(`/sessions/${id}`, {}, apiKey),
-  create: (data: { name: string; phoneNumberId: string; accessToken: string; waBusinessId?: string }, apiKey?: string) =>
+  create: (data: { name: string; platform: string; credentials: Record<string, string> }, apiKey?: string) =>
     fetchApi('/sessions', { method: 'POST', body: JSON.stringify(data) }, apiKey),
   connect: (id: string, apiKey?: string) =>
     fetchApi(`/sessions/${id}/connect`, { method: 'POST' }, apiKey),
@@ -47,7 +53,7 @@ export const sessions = {
     fetchApi(`/sessions/${id}/disconnect`, { method: 'POST' }, apiKey),
   delete: (id: string, apiKey?: string) =>
     fetchApi(`/sessions/${id}`, { method: 'DELETE' }, apiKey),
-  verifyToken: (id: string, apiKey?: string) =>
+  status: (id: string, apiKey?: string) =>
     fetchApi(`/sessions/${id}/status`, {}, apiKey),
 };
 
@@ -59,8 +65,10 @@ export const messages = {
     fetchApi('/messages/media', { method: 'POST', body: JSON.stringify(data) }, apiKey),
   sendTemplate: (data: { sessionId: string; to: string; templateName: string; languageCode?: string; components?: unknown[] }, apiKey?: string) =>
     fetchApi('/messages/template', { method: 'POST', body: JSON.stringify(data) }, apiKey),
-  list: (sessionId: string, jid: string, apiKey?: string) =>
-    fetchApi(`/messages/${sessionId}/${jid}`, {}, apiKey),
+  inbox: (apiKey?: string, params?: Record<string, string>) =>
+    fetchApi('/messages/inbox', { params }, apiKey),
+  list: (sessionId: string, platformId: string, apiKey?: string) =>
+    fetchApi(`/messages/${sessionId}/${platformId}`, {}, apiKey),
 };
 
 // Contacts
@@ -94,7 +102,7 @@ export const webhooks = {
 
 // Broadcasts
 export const broadcasts = {
-  list: (sessionId: string, apiKey?: string) => 
+  list: (sessionId: string, apiKey?: string) =>
     fetchApi(`/broadcasts/${sessionId}`, {}, apiKey),
   create: (data: { sessionId: string; name: string; recipients: string[]; message: string; delay?: number }, apiKey?: string) =>
     fetchApi('/broadcasts', { method: 'POST', body: JSON.stringify(data) }, apiKey),
@@ -102,7 +110,7 @@ export const broadcasts = {
 
 // Auto-Replies
 export const autoReplies = {
-  list: (sessionId: string, apiKey?: string) => 
+  list: (sessionId: string, apiKey?: string) =>
     fetchApi(`/auto-replies/${sessionId}`, {}, apiKey),
   create: (data: { sessionId: string; trigger: string; response: string; matchType: string }, apiKey?: string) =>
     fetchApi('/auto-replies', { method: 'POST', body: JSON.stringify(data) }, apiKey),

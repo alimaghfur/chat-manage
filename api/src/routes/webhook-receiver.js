@@ -1,278 +1,310 @@
 const router = require('express').Router();
 const { PrismaClient } = require('@prisma/client');
+const { getPlatformAdapter, createAdapterFromSession, findSessionForWebhook } = require('../services/platforms');
 const { triggerWebhook } = require('../services/webhook');
 
 const prisma = new PrismaClient();
 
-/**
- * @swagger
- * /webhook:
- *   get:
- *     summary: Webhook verification endpoint
- *     description: Meta sends a GET request to verify the webhook URL
- *     tags: [Webhook Receiver]
- */
-router.get('/', async (req, res) => {
+// ====================================================================
+// WHATSAPP WEBHOOK (Meta sends to /webhook/whatsapp)
+// ====================================================================
+
+router.get('/whatsapp', async (req, res) => {
+  const mode = req.query['hub.mode'];
+  const token = req.query['hub.verify_token'];
+  const challenge = req.query['hub.challenge'];
+  const verifyToken = process.env.WA_WEBHOOK_VERIFY_TOKEN;
+
+  if (mode === 'subscribe' && token === verifyToken) {
+    return res.status(200).send(challenge);
+  }
+
+  // Check per-session verify tokens
+  if (mode === 'subscribe' && token) {
+    const session = await prisma.session.findFirst({
+      where: { webhookVerifyToken: token, platform: 'whatsapp' },
+    });
+    if (session) return res.status(200).send(challenge);
+  }
+
+  return res.status(403).json({ error: 'Verification failed' });
+});
+
+router.post('/whatsapp', async (req, res) => {
+  res.status(200).json({ status: 'received' });
+
   try {
-    const mode = req.query['hub.mode'];
-    const token = req.query['hub.verify_token'];
-    const challenge = req.query['hub.challenge'];
-
-    const verifyToken = process.env.WA_WEBHOOK_VERIFY_TOKEN;
-
-    if (mode === 'subscribe' && token === verifyToken) {
-      console.log('Webhook verified successfully');
-      return res.status(200).send(challenge);
-    }
-
-    // Also check per-session verify tokens
-    if (mode === 'subscribe' && token) {
-      const session = await prisma.session.findFirst({
-        where: { webhookVerifyToken: token },
-      });
-      if (session) {
-        console.log(`Webhook verified for session ${session.id}`);
-        return res.status(200).send(challenge);
-      }
-    }
-
-    console.warn('Webhook verification failed');
-    return res.status(403).json({ error: 'Verification failed' });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
+    await processWebhook('whatsapp', req.body, req.app.get('io'));
+  } catch (err) {
+    console.error('[WhatsApp Webhook] Error:', err.message);
   }
 });
 
+// ====================================================================
+// TELEGRAM WEBHOOK (Telegram sends to /webhook/telegram/:botToken)
+// ====================================================================
 
+router.post('/telegram/:botToken', async (req, res) => {
+  res.status(200).json({ ok: true });
 
-/**
- * @swagger
- * /webhook:
- *   post:
- *     summary: Receive incoming webhook events from Meta
- *     description: Handles incoming messages, status updates, etc.
- *     tags: [Webhook Receiver]
- */
-router.post('/', async (req, res) => {
   try {
-    const body = req.body;
+    const session = await prisma.session.findFirst({
+      where: { platform: 'telegram', accessToken: req.params.botToken },
+    });
 
-    // Always respond 200 immediately to Meta
-    res.status(200).json({ status: 'received' });
-
-    // Process webhook payload asynchronously
-    if (body.object !== 'whatsapp_business_account') {
+    if (!session) {
+      console.warn(`[Telegram] No session for botToken: ${req.params.botToken.slice(0, 10)}...`);
       return;
     }
 
-    const entries = body.entry || [];
-    for (const entry of entries) {
-      const changes = entry.changes || [];
-      for (const change of changes) {
-        if (change.field !== 'messages') continue;
+    const adapter = createAdapterFromSession(session);
+    const parsed = await adapter.parseWebhook(req.body);
 
-        const value = change.value;
-        if (!value) continue;
-
-        const phoneNumberId = value.metadata?.phone_number_id;
-        const displayPhone = value.metadata?.display_phone_number;
-
-        // Find the session by phoneNumberId
-        const session = await prisma.session.findFirst({
-          where: { phoneNumberId },
-        });
-
-        if (!session) {
-          console.warn(`No session found for phoneNumberId: ${phoneNumberId}`);
-          continue;
-        }
-
-        const io = req.app.get('io');
-
-        // Handle incoming messages
-        if (value.messages && value.messages.length > 0) {
-          await handleIncomingMessages(session, value.messages, value.contacts, io);
-        }
-
-        // Handle status updates
-        if (value.statuses && value.statuses.length > 0) {
-          await handleStatusUpdates(session, value.statuses, io);
-        }
-      }
-    }
-  } catch (error) {
-    console.error('Webhook processing error:', error.message);
+    await saveIncomingMessages(session, parsed.messages, req.app.get('io'));
+  } catch (err) {
+    console.error('[Telegram Webhook] Error:', err.message);
   }
 });
 
+// ====================================================================
+// INSTAGRAM WEBHOOK (Meta sends to /webhook/instagram)
+// ====================================================================
 
+router.get('/instagram', async (req, res) => {
+  const mode = req.query['hub.mode'];
+  const token = req.query['hub.verify_token'];
+  const challenge = req.query['hub.challenge'];
+  const verifyToken = process.env.IG_WEBHOOK_VERIFY_TOKEN || process.env.WA_WEBHOOK_VERIFY_TOKEN;
 
-/**
- * Handle incoming messages from Meta webhook
- */
-async function handleIncomingMessages(session, messages, contacts, io) {
-  for (const msg of messages) {
-    try {
-      const from = msg.from; // sender phone number
-      const messageId = msg.id;
-      const timestamp = msg.timestamp
-        ? new Date(parseInt(msg.timestamp) * 1000)
-        : new Date();
-      const type = msg.type || 'text';
+  if (mode === 'subscribe' && token === verifyToken) {
+    return res.status(200).send(challenge);
+  }
+  return res.status(403).json({ error: 'Verification failed' });
+});
 
-      let content = '';
-      let mediaUrl = null;
-      let mimeType = null;
-      let fileName = null;
+router.post('/instagram', async (req, res) => {
+  res.status(200).json({ status: 'received' });
 
-      switch (type) {
-        case 'text':
-          content = msg.text?.body || '';
-          break;
-        case 'image':
-          content = msg.image?.caption || '[Image]';
-          mediaUrl = msg.image?.id || null; // Media ID, needs download
-          mimeType = msg.image?.mime_type || null;
-          break;
-        case 'video':
-          content = msg.video?.caption || '[Video]';
-          mediaUrl = msg.video?.id || null;
-          mimeType = msg.video?.mime_type || null;
-          break;
-        case 'document':
-          content = msg.document?.caption || '[Document]';
-          fileName = msg.document?.filename || null;
-          mediaUrl = msg.document?.id || null;
-          mimeType = msg.document?.mime_type || null;
-          break;
-        case 'audio':
-          content = '[Audio]';
-          mediaUrl = msg.audio?.id || null;
-          mimeType = msg.audio?.mime_type || null;
-          break;
-        case 'sticker':
-          content = '[Sticker]';
-          mediaUrl = msg.sticker?.id || null;
-          mimeType = msg.sticker?.mime_type || null;
-          break;
-        case 'location':
-          content = `[Location: ${msg.location?.latitude}, ${msg.location?.longitude}]`;
-          break;
-        case 'reaction':
-          content = msg.reaction?.emoji || '';
-          break;
-        case 'contacts':
-          content = '[Contact]';
-          break;
-        default:
-          content = `[${type}]`;
+  try {
+    await processWebhook('instagram', req.body, req.app.get('io'));
+  } catch (err) {
+    console.error('[Instagram Webhook] Error:', err.message);
+  }
+});
+
+// ====================================================================
+// MESSENGER WEBHOOK (Meta sends to /webhook/messenger)
+// ====================================================================
+
+router.get('/messenger', async (req, res) => {
+  const mode = req.query['hub.mode'];
+  const token = req.query['hub.verify_token'];
+  const challenge = req.query['hub.challenge'];
+  const verifyToken = process.env.FB_WEBHOOK_VERIFY_TOKEN || process.env.WA_WEBHOOK_VERIFY_TOKEN;
+
+  if (mode === 'subscribe' && token === verifyToken) {
+    return res.status(200).send(challenge);
+  }
+  return res.status(403).json({ error: 'Verification failed' });
+});
+
+router.post('/messenger', async (req, res) => {
+  res.status(200).json({ status: 'received' });
+
+  try {
+    await processWebhook('messenger', req.body, req.app.get('io'));
+  } catch (err) {
+    console.error('[Messenger Webhook] Error:', err.message);
+  }
+});
+
+// ====================================================================
+// LEGACY: Keep /webhook root for backward compatibility with WhatsApp
+// ====================================================================
+
+router.get('/', async (req, res) => {
+  const mode = req.query['hub.mode'];
+  const token = req.query['hub.verify_token'];
+  const challenge = req.query['hub.challenge'];
+  const verifyToken = process.env.WA_WEBHOOK_VERIFY_TOKEN;
+
+  if (mode === 'subscribe' && token === verifyToken) {
+    return res.status(200).send(challenge);
+  }
+
+  if (mode === 'subscribe' && token) {
+    const session = await prisma.session.findFirst({
+      where: { webhookVerifyToken: token },
+    });
+    if (session) return res.status(200).send(challenge);
+  }
+
+  return res.status(403).json({ error: 'Verification failed' });
+});
+
+router.post('/', async (req, res) => {
+  res.status(200).json({ status: 'received' });
+
+  try {
+    // Detect platform from payload
+    const body = req.body;
+    let platform = 'whatsapp'; // default
+
+    if (body.object === 'whatsapp_business_account') {
+      platform = 'whatsapp';
+    } else if (body.object === 'instagram') {
+      platform = 'instagram';
+    } else if (body.object === 'page') {
+      platform = 'messenger';
+    } else if (body.update_id !== undefined) {
+      platform = 'telegram';
+    }
+
+    await processWebhook(platform, body, req.app.get('io'));
+  } catch (err) {
+    console.error('[Webhook] Error:', err.message);
+  }
+});
+
+// ====================================================================
+// SHARED PROCESSING LOGIC
+// ====================================================================
+
+async function processWebhook(platform, body, io) {
+  let session;
+
+  // Find session based on platform
+  switch (platform) {
+    case 'whatsapp': {
+      // Extract phoneNumberId from payload
+      const phoneNumberId = body.entry?.[0]?.changes?.[0]?.value?.metadata?.phone_number_id;
+      if (phoneNumberId) {
+        session = await prisma.session.findFirst({
+          where: { platform: 'whatsapp', phoneNumberId },
+        });
       }
+      break;
+    }
+    case 'instagram': {
+      const igUserId = body.entry?.[0]?.id;
+      if (igUserId) {
+        session = await findSessionForWebhook('instagram', { igUserId });
+      }
+      break;
+    }
+    case 'messenger': {
+      const pageId = body.entry?.[0]?.id;
+      if (pageId) {
+        session = await findSessionForWebhook('messenger', { pageId });
+      }
+      break;
+    }
+  }
 
-      // Get contact name from contacts array
-      const contactInfo = contacts?.find((c) => c.wa_id === from);
-      const pushName = contactInfo?.profile?.name || null;
+  if (!session) {
+    console.warn(`[${platform}] No session found for incoming webhook`);
+    return;
+  }
 
-      // Save message to database
+  const adapter = createAdapterFromSession(session);
+  const parsed = await adapter.parseWebhook(body);
+
+  // Save messages
+  if (parsed.messages && parsed.messages.length > 0) {
+    await saveIncomingMessages(session, parsed.messages, io);
+  }
+
+  // Process status updates
+  if (parsed.statuses && parsed.statuses.length > 0) {
+    await processStatusUpdates(session, parsed.statuses, io);
+  }
+}
+
+async function saveIncomingMessages(session, messages, io) {
+  for (const msg of messages) {
+    if (!msg) continue;
+
+    try {
+      // Save to DB
       const savedMessage = await prisma.message.create({
         data: {
           sessionId: session.id,
-          jid: from,
-          messageId,
-          content,
-          type: type === 'reaction' ? 'reaction' : type,
-          mediaUrl,
-          mimeType,
-          fileName,
+          platformId: msg.chatId || msg.from,
+          externalMsgId: msg.messageId,
+          content: msg.content || '',
+          type: msg.type || 'text',
+          mediaUrl: msg.mediaUrl || null,
+          mimeType: msg.mimeType || null,
+          fileName: msg.fileName || null,
           fromMe: false,
           status: 'received',
-          timestamp,
-          quotedMsgId: msg.context?.message_id || null,
+          timestamp: msg.timestamp || new Date(),
+          quotedMsgId: msg.quotedMsgId || null,
         },
       });
 
-      // Emit event via Socket.IO
+      // Upsert contact
+      const contactPlatformId = msg.from;
+      await prisma.contact.upsert({
+        where: {
+          sessionId_platformId: { sessionId: session.id, platformId: contactPlatformId },
+        },
+        update: {
+          pushName: msg.pushName || undefined,
+          updatedAt: new Date(),
+        },
+        create: {
+          sessionId: session.id,
+          platformId: contactPlatformId,
+          pushName: msg.pushName || null,
+          phone: contactPlatformId,
+        },
+      });
+
+      // Emit via Socket.IO
       const eventData = {
         sessionId: session.id,
+        platform: session.platform,
         message: savedMessage,
-        raw: {
-          from,
-          pushName,
-          timestamp: msg.timestamp,
-          type,
-        },
+        raw: { from: msg.from, pushName: msg.pushName, type: msg.type },
       };
 
       if (io) {
         io.to(`session:${session.id}`).emit('message', eventData);
+        io.emit('inbox:message', eventData); // Global inbox event
       }
 
-      // Trigger user-configured webhooks
-      triggerWebhook('message', eventData);
+      // Trigger user webhooks
+      triggerWebhook('message.received', eventData);
     } catch (err) {
-      console.error(`Error processing incoming message for session ${session.id}:`, err.message);
+      console.error(`[${session.platform}] Error saving message:`, err.message);
     }
   }
 }
 
-
-
-/**
- * Handle message status updates from Meta webhook
- */
-async function handleStatusUpdates(session, statuses, io) {
-  for (const statusUpdate of statuses) {
+async function processStatusUpdates(session, statuses, io) {
+  for (const status of statuses) {
     try {
-      const messageId = statusUpdate.id;
-      const recipientId = statusUpdate.recipient_id;
-      const timestamp = statusUpdate.timestamp
-        ? new Date(parseInt(statusUpdate.timestamp) * 1000)
-        : new Date();
-
-      let status = null;
-      switch (statusUpdate.status) {
-        case 'sent':
-          status = 'sent';
-          break;
-        case 'delivered':
-          status = 'delivered';
-          break;
-        case 'read':
-          status = 'read';
-          break;
-        case 'failed':
-          status = 'failed';
-          break;
-        default:
-          continue;
+      if (status.messageId) {
+        await prisma.message.updateMany({
+          where: { sessionId: session.id, externalMsgId: status.messageId },
+          data: { status: status.status },
+        });
       }
 
-      // Update message status in database
-      await prisma.message.updateMany({
-        where: {
-          sessionId: session.id,
-          messageId,
-        },
-        data: { status },
-      });
-
-      // Emit status update via Socket.IO
       const eventData = {
         sessionId: session.id,
-        messageId,
-        recipientId,
-        status,
-        timestamp,
-        errors: statusUpdate.errors || null,
+        platform: session.platform,
+        ...status,
       };
 
       if (io) {
         io.to(`session:${session.id}`).emit('message-status', eventData);
       }
 
-      // Trigger user-configured webhooks
-      triggerWebhook('status', eventData);
+      triggerWebhook('message.status', eventData);
     } catch (err) {
-      console.error(`Error processing status update for session ${session.id}:`, err.message);
+      console.error(`[${session.platform}] Error processing status:`, err.message);
     }
   }
 }
