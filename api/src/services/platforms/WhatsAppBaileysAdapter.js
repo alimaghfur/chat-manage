@@ -231,7 +231,7 @@ class WhatsAppBaileysAdapter extends BasePlatform {
       }
     });
 
-    return sock;
+    return { status: 'connecting', message: 'WhatsApp session starting. Scan QR code or wait for pairing code.' };
   }
 
   /**
