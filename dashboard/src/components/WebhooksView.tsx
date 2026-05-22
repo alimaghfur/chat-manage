@@ -42,7 +42,7 @@ export default function WebhooksView({ apiKey }: WebhooksViewProps) {
   const fetchWebhooks = useCallback(async () => {
     try {
       const data = await webhooksApi.list(apiKey);
-      const list = data.webhooks || data || [];
+      const list = data.data || data || [];
       setWebhooksList(Array.isArray(list) ? list : []);
       setError(null);
     } catch (err) {

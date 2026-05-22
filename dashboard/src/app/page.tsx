@@ -109,7 +109,7 @@ export default function Home() {
       case 'api-keys':
         return <ApiKeysView apiKey={apiKey} />;
       default:
-        return <DashboardView apiKey={apiKey} />;
+        return <DashboardView apiKey={apiKey} onViewChange={setActiveView} />;
     }
   };
 

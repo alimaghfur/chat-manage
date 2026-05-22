@@ -35,7 +35,7 @@ export default function MessagesView({ apiKey }: MessagesViewProps) {
   const fetchSessions = useCallback(async () => {
     try {
       const data = await sessionsApi.list(apiKey);
-      const list = data.sessions || data || [];
+      const list = data.data || data || [];
       setSessionsList(Array.isArray(list) ? list.filter((s: Session) => s.status === 'connected') : []);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load sessions');
@@ -56,7 +56,7 @@ export default function MessagesView({ apiKey }: MessagesViewProps) {
     setSuccess(null);
 
     try {
-      await messagesApi.send(selectedSession, { to: recipient, text: messageText }, apiKey);
+      await messagesApi.sendText({ sessionId: selectedSession, to: recipient, text: messageText }, apiKey);
 
       const newMessage: SentMessage = {
         id: Date.now().toString(),
@@ -135,9 +135,10 @@ export default function MessagesView({ apiKey }: MessagesViewProps) {
               type="text"
               value={recipient}
               onChange={(e) => setRecipient(e.target.value)}
-              placeholder="e.g., 1234567890@s.whatsapp.net"
+              placeholder="e.g., 15551234567 (country code + number, no + or @)"
               className="w-full px-3 py-2 bg-[#2A3942] border border-[#2A3942] rounded-lg text-[#E9EDEF] placeholder-[#8696A0] focus:outline-none focus:border-[#00A884]"
             />
+            <p className="text-xs text-[#8696A0] mt-1">Format: Country code + phone number (e.g., 15551234567 for US, 6281234567890 for Indonesia)</p>
           </div>
 
           {/* Message */}

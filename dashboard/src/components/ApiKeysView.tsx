@@ -31,7 +31,7 @@ export default function ApiKeysView({ apiKey }: ApiKeysViewProps) {
   const fetchKeys = useCallback(async () => {
     try {
       const data = await apiKeysApi.list(apiKey);
-      const list = data.keys || data.apiKeys || data || [];
+      const list = data.data || data || [];
       setKeysList(Array.isArray(list) ? list : []);
       setError(null);
     } catch (err) {
@@ -49,8 +49,8 @@ export default function ApiKeysView({ apiKey }: ApiKeysViewProps) {
     if (!newKeyName.trim()) return;
     setActionLoading('create');
     try {
-      const data = await apiKeysApi.create({ name: newKeyName }, apiKey);
-      const createdKey = data.key || data.apiKey || data.token || '';
+      const response = await apiKeysApi.create({ name: newKeyName }, apiKey);
+      const createdKey = response.data?.key || response.key || '';
       setNewKeyCreated(createdKey);
       setNewKeyName('');
       setSuccess('API key created! Make sure to copy it now.');
