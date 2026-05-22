@@ -72,13 +72,13 @@ export const contacts = {
 // Groups
 export const groups = {
   list: (sessionId: string, apiKey?: string) =>
-    fetchApi(`/sessions/${sessionId}/groups`, {}, apiKey),
+    fetchApi(`/groups/${sessionId}`, {}, apiKey),
 };
 
 // Labels
 export const labels = {
   list: (sessionId: string, apiKey?: string) =>
-    fetchApi(`/sessions/${sessionId}/labels`, {}, apiKey),
+    fetchApi(`/labels/${sessionId}`, {}, apiKey),
 };
 
 // Webhooks
@@ -94,27 +94,31 @@ export const webhooks = {
 
 // Broadcasts
 export const broadcasts = {
-  list: (apiKey?: string) => fetchApi('/broadcasts', {}, apiKey),
-  create: (data: { sessionId: string; recipients: string[]; message: string }, apiKey?: string) =>
+  list: (sessionId: string, apiKey?: string) => 
+    fetchApi(`/broadcasts/${sessionId}`, {}, apiKey),
+  create: (data: { sessionId: string; name: string; recipients: string[]; message: string; delay?: number }, apiKey?: string) =>
     fetchApi('/broadcasts', { method: 'POST', body: JSON.stringify(data) }, apiKey),
 };
 
 // Auto-Replies
 export const autoReplies = {
-  list: (apiKey?: string) => fetchApi('/auto-replies', {}, apiKey),
-  create: (data: { trigger: string; response: string; sessionId?: string }, apiKey?: string) =>
+  list: (sessionId: string, apiKey?: string) => 
+    fetchApi(`/auto-replies/${sessionId}`, {}, apiKey),
+  create: (data: { sessionId: string; trigger: string; response: string; matchType: string }, apiKey?: string) =>
     fetchApi('/auto-replies', { method: 'POST', body: JSON.stringify(data) }, apiKey),
   delete: (id: string, apiKey?: string) =>
     fetchApi(`/auto-replies/${id}`, { method: 'DELETE' }, apiKey),
+  toggle: (id: string, apiKey?: string) =>
+    fetchApi(`/auto-replies/${id}/toggle`, { method: 'PATCH' }, apiKey),
 };
 
 // API Keys
 export const apiKeys = {
-  list: (apiKey?: string) => fetchApi('/api-keys', {}, apiKey),
-  create: (data: { name: string; permissions?: string[] }, apiKey?: string) =>
-    fetchApi('/api-keys', { method: 'POST', body: JSON.stringify(data) }, apiKey),
+  list: (apiKey?: string) => fetchApi('/keys', {}, apiKey),
+  create: (data: { name: string; permissions?: string[]; rateLimit?: number }, apiKey?: string) =>
+    fetchApi('/keys', { method: 'POST', body: JSON.stringify(data) }, apiKey),
   revoke: (id: string, apiKey?: string) =>
-    fetchApi(`/api-keys/${id}`, { method: 'DELETE' }, apiKey),
+    fetchApi(`/keys/${id}`, { method: 'DELETE' }, apiKey),
 };
 
 // Audit Log
