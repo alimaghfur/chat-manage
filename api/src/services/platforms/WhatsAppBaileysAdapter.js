@@ -1,22 +1,23 @@
 /**
- * WhatsApp Non-API Adapter using Baileys
- * Connects to WhatsApp via QR Code or Pairing Code (like WhatsApp Web)
+ * WhatsApp Adapter using whatsapp-web.js (Puppeteer-based)
  * 
- * This provides full WhatsApp access without needing Meta Business API
+ * Connects to WhatsApp via QR Code scan - uses a real Chrome browser instance
+ * which makes it more stable and less likely to be blocked than Baileys.
+ * 
+ * Library: whatsapp-web.js (https://github.com/pedroslopez/whatsapp-web.js)
+ * Requires: Chromium/Chrome installed on the system
  */
 
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, makeCacheableSignalKeyStore, delay } = require('@whiskeysockets/baileys');
-const { Boom } = require('@hapi/boom');
+const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
 const path = require('path');
 const fs = require('fs');
-const pino = require('pino');
 const { PrismaClient } = require('@prisma/client');
 const BasePlatform = require('./BasePlatform');
 const { triggerWebhook } = require('../webhook');
 
 const prisma = new PrismaClient();
 
-// Store active socket connections in memory
+// Store active client connections in memory
 const activeSessions = new Map();
 
 const SESSIONS_DIR = path.join(process.cwd(), 'sessions', 'whatsapp');
@@ -29,218 +30,253 @@ class WhatsAppBaileysAdapter extends BasePlatform {
   }
 
   /**
-   * Get active socket connection
+   * Get active whatsapp-web.js client
    */
-  getSocket() {
-    return activeSessions.get(this.sessionId)?.sock || null;
+  getClient() {
+    return activeSessions.get(this.sessionId)?.client || null;
   }
 
   /**
-   * Start connection - generates QR code or uses pairing code
+   * Alias for backward compat
+   */
+  getSocket() {
+    return this.getClient();
+  }
+
+  /**
+   * Start connection - generates QR code for scanning
    * @param {object} io - Socket.IO instance for real-time updates
-   * @param {object} options - { pairingCode: string, phoneNumber: string }
+   * @param {object} options - { usePairingCode, phoneNumber }
    */
   async connect(io, options = {}) {
-    // Ensure session directory exists
-    if (!fs.existsSync(this.sessionDir)) {
-      fs.mkdirSync(this.sessionDir, { recursive: true });
+    // If already connected, return immediately
+    const existing = activeSessions.get(this.sessionId);
+    if (existing?.client?.info) {
+      return { status: 'connected', message: 'Already connected' };
     }
 
-    const { state, saveCreds } = await useMultiFileAuthState(this.sessionDir);
-    const { version } = await fetchLatestBaileysVersion();
+    // Ensure session directory exists
+    if (!fs.existsSync(SESSIONS_DIR)) {
+      fs.mkdirSync(SESSIONS_DIR, { recursive: true });
+    }
 
-    const logger = pino({ level: 'silent' });
-
-    const sock = makeWASocket({
-      version,
-      auth: {
-        creds: state.creds,
-        keys: makeCacheableSignalKeyStore(state.keys, logger),
+    // Create whatsapp-web.js client with LocalAuth for session persistence
+    const client = new Client({
+      authStrategy: new LocalAuth({
+        clientId: this.sessionId,
+        dataPath: SESSIONS_DIR,
+      }),
+      puppeteer: {
+        headless: true,
+        args: [
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
+          '--disable-dev-shm-usage',
+          '--disable-accelerated-2d-canvas',
+          '--no-first-run',
+          '--no-zygote',
+          '--disable-gpu',
+          '--single-process',
+        ],
+        executablePath: process.env.CHROMIUM_PATH || undefined,
       },
-      printQRInTerminal: false,
-      logger,
-      browser: ['Chat Manager', 'Chrome', '120.0.0'],
-      generateHighQualityLinkPreview: true,
-      syncFullHistory: false,
+      webVersionCache: {
+        type: 'remote',
+        remotePath: 'https://raw.githubusercontent.com/nicollysamen);/nicollys/refs/heads/main/nicollys.json',
+      },
     });
 
     // Store in memory
-    activeSessions.set(this.sessionId, { sock, saveCreds });
+    activeSessions.set(this.sessionId, { client, io });
 
-    // Handle pairing code request
-    if (options.usePairingCode && options.phoneNumber) {
-      // Wait for socket to be ready
-      await delay(3000);
+    // Update status to connecting
+    await prisma.session.update({
+      where: { id: this.sessionId },
+      data: { status: 'connecting', qrCode: null, pairingCode: null },
+    });
+
+    // ==================== EVENT HANDLERS ====================
+
+    // QR Code event - fires when QR is ready to scan
+    client.on('qr', async (qr) => {
+      console.log(`[WhatsApp] QR generated for session: ${this.sessionId}`);
+
+      await prisma.session.update({
+        where: { id: this.sessionId },
+        data: { qrCode: qr, status: 'qr_ready' },
+      });
+
+      if (io) {
+        io.to(`session:${this.sessionId}`).emit('qr', {
+          sessionId: this.sessionId,
+          qr,
+        });
+      }
+    });
+
+    // Authenticated - QR scanned successfully, loading data
+    client.on('authenticated', async () => {
+      console.log(`[WhatsApp] Authenticated: ${this.sessionId}`);
+      await prisma.session.update({
+        where: { id: this.sessionId },
+        data: { status: 'connecting', qrCode: null },
+      });
+    });
+
+    // Ready - fully connected and ready to send/receive
+    client.on('ready', async () => {
+      console.log(`[WhatsApp] Ready: ${this.sessionId}`);
+
+      const info = client.info;
+      const phone = info?.wid?.user || info?.wid?._serialized?.split('@')[0] || null;
+      const pushname = info?.pushname || null;
+
+      await prisma.session.update({
+        where: { id: this.sessionId },
+        data: {
+          status: 'connected',
+          phone,
+          username: pushname,
+          qrCode: null,
+          pairingCode: null,
+          sessionPath: this.sessionDir,
+          lastSeen: new Date(),
+        },
+      });
+
+      if (io) {
+        io.to(`session:${this.sessionId}`).emit('connected', {
+          sessionId: this.sessionId,
+          platform: 'whatsapp',
+          phone,
+          name: pushname,
+        });
+        io.emit('session:status', { sessionId: this.sessionId, status: 'connected' });
+      }
+
+      triggerWebhook('session.connected', { sessionId: this.sessionId, platform: 'whatsapp', phone });
+    });
+
+    // Disconnected
+    client.on('disconnected', async (reason) => {
+      console.log(`[WhatsApp] Disconnected: ${this.sessionId}, reason: ${reason}`);
+
+      activeSessions.delete(this.sessionId);
+
+      await prisma.session.update({
+        where: { id: this.sessionId },
+        data: { status: 'disconnected', qrCode: null },
+      });
+
+      if (io) {
+        io.to(`session:${this.sessionId}`).emit('disconnected', {
+          sessionId: this.sessionId,
+          reason,
+        });
+        io.emit('session:status', { sessionId: this.sessionId, status: 'disconnected' });
+      }
+
+      triggerWebhook('session.disconnected', { sessionId: this.sessionId, platform: 'whatsapp', reason });
+    });
+
+    // Auth failure
+    client.on('auth_failure', async (msg) => {
+      console.error(`[WhatsApp] Auth failure: ${this.sessionId}:`, msg);
+
+      activeSessions.delete(this.sessionId);
+
+      await prisma.session.update({
+        where: { id: this.sessionId },
+        data: { status: 'disconnected', qrCode: null },
+      });
+
+      if (io) {
+        io.to(`session:${this.sessionId}`).emit('auth-failure', {
+          sessionId: this.sessionId,
+          message: msg,
+        });
+      }
+    });
+
+    // ==================== MESSAGE HANDLERS ====================
+
+    // Incoming message
+    client.on('message', async (msg) => {
       try {
-        const code = await sock.requestPairingCode(options.phoneNumber);
-        const pairingCode = code?.match(/.{1,4}/g)?.join('-') || code;
-
-        await prisma.session.update({
-          where: { id: this.sessionId },
-          data: { pairingCode, status: 'connecting' },
-        });
-
-        if (io) {
-          io.to(`session:${this.sessionId}`).emit('pairing-code', {
-            sessionId: this.sessionId,
-            pairingCode,
-          });
-        }
+        await this._handleIncomingMessage(msg, io, false);
       } catch (err) {
-        console.error(`[WhatsApp Baileys] Pairing code error for ${this.sessionId}:`, err.message);
-      }
-    }
-
-    // Connection update handler
-    sock.ev.on('connection.update', async (update) => {
-      const { connection, lastDisconnect, qr } = update;
-
-      // QR Code received
-      if (qr) {
-        await prisma.session.update({
-          where: { id: this.sessionId },
-          data: { qrCode: qr, status: 'qr_ready' },
-        });
-
-        if (io) {
-          io.to(`session:${this.sessionId}`).emit('qr', {
-            sessionId: this.sessionId,
-            qr,
-          });
-        }
-      }
-
-      // Connected successfully
-      if (connection === 'open') {
-        const user = sock.user;
-        await prisma.session.update({
-          where: { id: this.sessionId },
-          data: {
-            status: 'connected',
-            phone: user?.id?.split(':')[0] || user?.id?.split('@')[0] || null,
-            username: user?.name || null,
-            qrCode: null,
-            pairingCode: null,
-            sessionPath: this.sessionDir,
-          },
-        });
-
-        if (io) {
-          io.to(`session:${this.sessionId}`).emit('connected', {
-            sessionId: this.sessionId,
-            phone: user?.id,
-            name: user?.name,
-          });
-          io.emit('session:status', { sessionId: this.sessionId, status: 'connected' });
-        }
-
-        triggerWebhook('session.connected', { sessionId: this.sessionId, platform: 'whatsapp' });
-      }
-
-      // Disconnected
-      if (connection === 'close') {
-        const statusCode = (lastDisconnect?.error instanceof Boom)
-          ? lastDisconnect.error.output.statusCode
-          : 500;
-
-        const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
-
-        await prisma.session.update({
-          where: { id: this.sessionId },
-          data: { status: shouldReconnect ? 'connecting' : 'disconnected', qrCode: null },
-        });
-
-        if (io) {
-          io.to(`session:${this.sessionId}`).emit('disconnected', {
-            sessionId: this.sessionId,
-            reason: statusCode,
-            willReconnect: shouldReconnect,
-          });
-          io.emit('session:status', { sessionId: this.sessionId, status: 'disconnected' });
-        }
-
-        activeSessions.delete(this.sessionId);
-
-        // Auto-reconnect unless logged out
-        if (shouldReconnect) {
-          setTimeout(() => this.connect(io, options), 5000);
-        } else {
-          // Logged out - clean up session files
-          triggerWebhook('session.disconnected', { sessionId: this.sessionId, platform: 'whatsapp', loggedOut: true });
-        }
+        console.error(`[WhatsApp] Message handler error:`, err.message);
       }
     });
 
-    // Save credentials on update
-    sock.ev.on('creds.update', saveCreds);
-
-    // Incoming messages
-    sock.ev.on('messages.upsert', async ({ messages: msgs, type }) => {
-      if (type !== 'notify') return;
-
-      for (const msg of msgs) {
+    // Outgoing message (sent by us from phone)
+    client.on('message_create', async (msg) => {
+      if (msg.fromMe) {
         try {
-          await this._handleIncomingMessage(msg, io);
+          await this._handleIncomingMessage(msg, io, true);
         } catch (err) {
-          console.error(`[WhatsApp Baileys] Message handling error:`, err.message);
+          console.error(`[WhatsApp] Outgoing message handler error:`, err.message);
         }
       }
     });
 
-    // Message status updates
-    sock.ev.on('messages.update', async (updates) => {
-      for (const update of updates) {
-        try {
-          await this._handleMessageUpdate(update, io);
-        } catch (err) {
-          console.error(`[WhatsApp Baileys] Status update error:`, err.message);
-        }
+    // Message ACK (status updates: sent, delivered, read)
+    client.on('message_ack', async (msg, ack) => {
+      try {
+        await this._handleMessageAck(msg, ack, io);
+      } catch (err) {
+        console.error(`[WhatsApp] ACK handler error:`, err.message);
       }
     });
 
-    // Contacts updated
-    sock.ev.on('contacts.update', async (contacts) => {
-      for (const contact of contacts) {
-        try {
-          if (contact.id && contact.notify) {
-            await prisma.contact.upsert({
-              where: { sessionId_platformId: { sessionId: this.sessionId, platformId: contact.id } },
-              update: { pushName: contact.notify, updatedAt: new Date() },
-              create: { sessionId: this.sessionId, platformId: contact.id, pushName: contact.notify, phone: contact.id.split('@')[0] },
-            });
-          }
-        } catch { /* skip */ }
-      }
-    });
-
-    // Groups updated
-    sock.ev.on('groups.update', async (groups) => {
-      for (const group of groups) {
-        try {
+    // Group updates
+    client.on('group_update', async (notification) => {
+      try {
+        const chat = await notification.getChat();
+        if (chat.isGroup) {
           await prisma.group.upsert({
-            where: { sessionId_platformId: { sessionId: this.sessionId, platformId: group.id } },
-            update: { name: group.subject || undefined, description: group.desc || undefined },
+            where: { sessionId_platformId: { sessionId: this.sessionId, platformId: chat.id._serialized } },
+            update: { name: chat.name, memberCount: chat.participants?.length || 0 },
             create: {
               sessionId: this.sessionId,
-              platformId: group.id,
-              name: group.subject || 'Unknown Group',
-              participants: '[]',
+              platformId: chat.id._serialized,
+              name: chat.name,
+              participants: JSON.stringify(chat.participants?.map(p => p.id._serialized) || []),
+              memberCount: chat.participants?.length || 0,
             },
           });
-        } catch { /* skip */ }
-      }
+        }
+      } catch { /* skip */ }
     });
 
-    return { status: 'connecting', message: 'WhatsApp session starting. Scan QR code or wait for pairing code.' };
+    // ==================== INITIALIZE ====================
+
+    // Start the client (this launches Puppeteer and WhatsApp Web)
+    client.initialize().catch((err) => {
+      console.error(`[WhatsApp] Initialize error for ${this.sessionId}:`, err.message);
+      activeSessions.delete(this.sessionId);
+      prisma.session.update({
+        where: { id: this.sessionId },
+        data: { status: 'disconnected' },
+      }).catch(() => {});
+    });
+
+    return { status: 'connecting', message: 'WhatsApp session starting. QR code will appear shortly.' };
   }
 
   /**
-   * Disconnect the session
+   * Disconnect and destroy the session
    */
   async disconnect() {
-    const session = activeSessions.get(this.sessionId);
-    if (session?.sock) {
-      await session.sock.logout();
+    const sessionData = activeSessions.get(this.sessionId);
+    if (sessionData?.client) {
+      try {
+        await sessionData.client.logout();
+      } catch {
+        try {
+          await sessionData.client.destroy();
+        } catch { /* ignore */ }
+      }
       activeSessions.delete(this.sessionId);
     }
     await prisma.session.update({
@@ -250,166 +286,190 @@ class WhatsAppBaileysAdapter extends BasePlatform {
   }
 
   async verifyCredentials() {
-    const sock = this.getSocket();
-    if (sock && sock.user) {
+    const client = this.getClient();
+    if (client?.info) {
       return {
         valid: true,
         info: {
-          phone: sock.user.id?.split(':')[0] || sock.user.id?.split('@')[0],
-          name: sock.user.name,
-          platform: 'whatsapp',
+          phone: client.info.wid?.user || null,
+          name: client.info.pushname || null,
+          platform: 'whatsapp (wwebjs)',
         },
       };
     }
-    // Check if session files exist
-    if (fs.existsSync(path.join(this.sessionDir, 'creds.json'))) {
-      return { valid: true, info: { note: 'Session files exist, needs reconnect' } };
+    // Check if session data exists (LocalAuth stores in .wwebjs_auth)
+    const authDir = path.join(SESSIONS_DIR, `session-${this.sessionId}`);
+    if (fs.existsSync(authDir)) {
+      return { valid: true, info: { note: 'Session data exists, needs reconnect' } };
     }
-    return { valid: false, error: 'Not connected. Start QR scan or pairing code.' };
+    return { valid: false, error: 'Not connected. Start QR scan.' };
   }
 
   async sendText(to, text) {
-    const sock = this.getSocket();
-    if (!sock) throw Object.assign(new Error('WhatsApp not connected'), { statusCode: 503 });
+    const client = this.getClient();
+    if (!client?.info) throw Object.assign(new Error('WhatsApp not connected'), { statusCode: 503 });
 
-    const jid = this._formatJid(to);
-    const result = await sock.sendMessage(jid, { text });
+    const chatId = this._formatChatId(to);
+    const msg = await client.sendMessage(chatId, text);
 
     return {
-      messageId: result.key.id,
-      raw: result,
+      messageId: msg.id?.id || msg.id?._serialized || null,
+      raw: { id: msg.id, timestamp: msg.timestamp },
     };
   }
 
   async sendMedia(to, type, mediaUrl, options = {}) {
-    const sock = this.getSocket();
-    if (!sock) throw Object.assign(new Error('WhatsApp not connected'), { statusCode: 503 });
+    const client = this.getClient();
+    if (!client?.info) throw Object.assign(new Error('WhatsApp not connected'), { statusCode: 503 });
 
-    const jid = this._formatJid(to);
-    let msgContent;
+    const chatId = this._formatChatId(to);
 
-    switch (type) {
-      case 'image':
-        msgContent = { image: { url: mediaUrl }, caption: options.caption || '' };
-        break;
-      case 'video':
-        msgContent = { video: { url: mediaUrl }, caption: options.caption || '' };
-        break;
-      case 'audio':
-        msgContent = { audio: { url: mediaUrl }, mimetype: options.mimeType || 'audio/mp4' };
-        break;
-      case 'document':
-        msgContent = { document: { url: mediaUrl }, mimetype: options.mimeType || 'application/pdf', fileName: options.fileName || 'document' };
-        break;
-      case 'sticker':
-        msgContent = { sticker: { url: mediaUrl } };
-        break;
-      default:
-        msgContent = { document: { url: mediaUrl }, mimetype: options.mimeType || 'application/octet-stream' };
+    // Create media from URL
+    const media = await MessageMedia.fromUrl(mediaUrl, { unsafeMime: true });
+
+    const sendOptions = {};
+    if (options.caption) sendOptions.caption = options.caption;
+    if (type === 'document') {
+      sendOptions.sendMediaAsDocument = true;
+      if (options.fileName) media.filename = options.fileName;
     }
+    if (type === 'sticker') sendOptions.sendMediaAsSticker = true;
 
-    const result = await sock.sendMessage(jid, msgContent);
-    return { messageId: result.key.id, raw: result };
+    const msg = await client.sendMessage(chatId, media, sendOptions);
+
+    return {
+      messageId: msg.id?.id || msg.id?._serialized || null,
+      raw: { id: msg.id, timestamp: msg.timestamp },
+    };
   }
 
   async sendReaction(to, messageId, emoji) {
-    const sock = this.getSocket();
-    if (!sock) throw Object.assign(new Error('WhatsApp not connected'), { statusCode: 503 });
+    const client = this.getClient();
+    if (!client?.info) throw Object.assign(new Error('WhatsApp not connected'), { statusCode: 503 });
 
-    const jid = this._formatJid(to);
-    const result = await sock.sendMessage(jid, {
-      react: { text: emoji || '', key: { remoteJid: jid, id: messageId } },
-    });
-    return { messageId: result?.key?.id, raw: result };
+    // Need to get the message object to react to it
+    const chatId = this._formatChatId(to);
+    const chat = await client.getChatById(chatId);
+    const messages = await chat.fetchMessages({ limit: 50 });
+    const targetMsg = messages.find(m => (m.id?.id || m.id?._serialized) === messageId);
+
+    if (!targetMsg) {
+      throw Object.assign(new Error('Message not found for reaction'), { statusCode: 404 });
+    }
+
+    await targetMsg.react(emoji || '');
+    return { messageId: null };
   }
 
-  async markAsRead(to, messageIds) {
-    const sock = this.getSocket();
-    if (!sock) return false;
+  async markAsRead(to) {
+    const client = this.getClient();
+    if (!client?.info) return false;
 
-    const jid = this._formatJid(to);
-    const keys = Array.isArray(messageIds)
-      ? messageIds.map((id) => ({ remoteJid: jid, id }))
-      : [{ remoteJid: jid, id: messageIds }];
-
-    await sock.readMessages(keys);
-    return true;
+    try {
+      const chatId = this._formatChatId(to);
+      const chat = await client.getChatById(chatId);
+      await chat.sendSeen();
+      return true;
+    } catch { return false; }
   }
 
   async getProfile() {
-    const sock = this.getSocket();
-    if (!sock) return null;
-    return { user: sock.user };
+    const client = this.getClient();
+    if (!client?.info) return null;
+    return {
+      phone: client.info.wid?.user,
+      name: client.info.pushname,
+      platform: client.info.platform,
+    };
   }
 
-  async getGroupMetadata(groupJid) {
-    const sock = this.getSocket();
-    if (!sock) throw new Error('Not connected');
-    return sock.groupMetadata(groupJid);
+  async getGroupMetadata(groupId) {
+    const client = this.getClient();
+    if (!client?.info) throw new Error('Not connected');
+
+    const chatId = this._formatChatId(groupId);
+    const chat = await client.getChatById(chatId);
+    if (!chat.isGroup) throw new Error('Not a group');
+
+    return {
+      id: chat.id._serialized,
+      name: chat.name,
+      description: chat.description,
+      participants: chat.participants?.map(p => ({
+        id: p.id._serialized,
+        isAdmin: p.isAdmin,
+        isSuperAdmin: p.isSuperAdmin,
+      })) || [],
+      owner: chat.owner?._serialized,
+      createdAt: chat.createdAt,
+    };
   }
 
   // ==================== PRIVATE METHODS ====================
 
-  _formatJid(input) {
+  _formatChatId(input) {
     if (input.includes('@')) return input;
-    // Assume phone number, add @s.whatsapp.net
+    // Clean phone number and add @c.us suffix
     const cleaned = input.replace(/[^0-9]/g, '');
-    return `${cleaned}@s.whatsapp.net`;
+    return `${cleaned}@c.us`;
   }
 
-  async _handleIncomingMessage(msg, io) {
-    if (!msg.message) return; // Skip empty/protocol messages
+  async _handleIncomingMessage(msg, io, fromMe) {
+    // Skip status messages and system messages
+    if (msg.isStatus || msg.type === 'e2e_notification' || msg.type === 'notification_template') return;
 
-    const jid = msg.key.remoteJid;
-    if (jid === 'status@broadcast') return; // Skip status updates
+    const chatId = msg.from || msg.to;
+    if (!chatId) return;
 
-    const fromMe = msg.key.fromMe || false;
-    const sender = fromMe ? 'me' : (msg.key.participant || jid);
-    const pushName = msg.pushName || null;
-    const timestamp = msg.messageTimestamp
-      ? new Date(Number(msg.messageTimestamp) * 1000)
-      : new Date();
+    const contact = await msg.getContact();
+    const chat = await msg.getChat();
+    const pushName = contact?.pushname || contact?.name || contact?.number || chatId.split('@')[0];
+    const isGroup = chat?.isGroup || chatId.endsWith('@g.us');
+    const timestamp = msg.timestamp ? new Date(msg.timestamp * 1000) : new Date();
 
     // Parse message content
-    const parsed = this._parseMessageContent(msg.message);
+    const parsed = this._parseMessage(msg);
 
     // Save to database
     const savedMessage = await prisma.message.create({
       data: {
         sessionId: this.sessionId,
-        platformChatId: jid,
-        senderName: pushName || sender.split('@')[0],
+        platformChatId: fromMe ? (msg.to || chatId) : chatId,
+        senderName: fromMe ? 'You' : pushName,
         content: parsed.content,
         type: parsed.type,
         mediaUrl: parsed.mediaUrl || null,
         mediaMimeType: parsed.mimeType || null,
         mediaFileName: parsed.fileName || null,
-        fromMe,
+        fromMe: fromMe || false,
         status: fromMe ? 'sent' : 'received',
         timestamp,
-        externalMsgId: msg.key.id,
-        quotedMsgId: msg.message?.extendedTextMessage?.contextInfo?.stanzaId || null,
-        quotedContent: msg.message?.extendedTextMessage?.contextInfo?.quotedMessage?.conversation || null,
-        isForwarded: !!msg.message?.extendedTextMessage?.contextInfo?.isForwarded,
+        externalMsgId: msg.id?.id || msg.id?._serialized || null,
+        quotedMsgId: msg.hasQuotedMsg ? (await msg.getQuotedMessage().catch(() => null))?.id?.id : null,
+        isForwarded: msg.isForwarded || false,
+        isStarred: msg.isStarred || false,
       },
     });
 
     // Upsert contact
+    const contactChatId = fromMe ? (msg.to || chatId) : chatId;
+    const contactName = isGroup ? (chat?.name || pushName) : pushName;
+
     await prisma.contact.upsert({
-      where: { sessionId_platformId: { sessionId: this.sessionId, platformId: jid } },
+      where: { sessionId_platformId: { sessionId: this.sessionId, platformId: contactChatId } },
       update: {
-        pushName: pushName || undefined,
+        pushName: contactName || undefined,
         lastMessage: parsed.content.slice(0, 100),
         lastMsgTime: timestamp,
         unreadCount: fromMe ? 0 : { increment: 1 },
-        isGroup: jid.endsWith('@g.us'),
+        isGroup,
       },
       create: {
         sessionId: this.sessionId,
-        platformId: jid,
-        pushName: pushName || null,
-        phone: jid.split('@')[0],
-        isGroup: jid.endsWith('@g.us'),
+        platformId: contactChatId,
+        pushName: contactName || null,
+        phone: contactChatId.split('@')[0],
+        isGroup,
         lastMessage: parsed.content.slice(0, 100),
         lastMsgTime: timestamp,
         unreadCount: fromMe ? 0 : 1,
@@ -421,7 +481,7 @@ class WhatsAppBaileysAdapter extends BasePlatform {
       sessionId: this.sessionId,
       platform: 'whatsapp',
       message: savedMessage,
-      contact: { platformId: jid, pushName, phone: jid.split('@')[0] },
+      contact: { platformId: contactChatId, pushName: contactName, phone: contactChatId.split('@')[0], isGroup },
     };
 
     if (io) {
@@ -429,71 +489,69 @@ class WhatsAppBaileysAdapter extends BasePlatform {
       io.emit('inbox:message', eventData);
     }
 
-    // Trigger webhooks
-    triggerWebhook('message.received', eventData);
-
-    // Auto-reply check
+    // Trigger webhooks (only for incoming)
     if (!fromMe) {
-      await this._checkAutoReply(jid, parsed.content);
+      triggerWebhook('message.received', eventData);
+
+      // Check auto-reply
+      await this._checkAutoReply(contactChatId, parsed.content);
     }
   }
 
-  async _handleMessageUpdate(update, io) {
-    if (!update.key || !update.update) return;
-
-    const statusMap = { 2: 'sent', 3: 'delivered', 4: 'read' };
-    const newStatus = statusMap[update.update.status];
+  async _handleMessageAck(msg, ack, io) {
+    // ack values: -1 = error, 0 = pending, 1 = sent, 2 = received (delivered), 3 = read, 4 = played
+    const statusMap = { 1: 'sent', 2: 'delivered', 3: 'read', 4: 'read' };
+    const newStatus = statusMap[ack];
     if (!newStatus) return;
 
+    const msgId = msg.id?.id || msg.id?._serialized;
+    if (!msgId) return;
+
     await prisma.message.updateMany({
-      where: { sessionId: this.sessionId, externalMsgId: update.key.id },
+      where: { sessionId: this.sessionId, externalMsgId: msgId },
       data: { status: newStatus },
     });
 
     if (io) {
       io.to(`session:${this.sessionId}`).emit('message-status', {
         sessionId: this.sessionId,
-        messageId: update.key.id,
+        messageId: msgId,
         status: newStatus,
+        ack,
       });
     }
   }
 
-  _parseMessageContent(message) {
-    if (message.conversation) {
-      return { type: 'text', content: message.conversation };
+  _parseMessage(msg) {
+    const type = msg.type || 'chat';
+
+    switch (type) {
+      case 'chat':
+        return { type: 'text', content: msg.body || '' };
+      case 'image':
+        return { type: 'image', content: msg.body || '[Image]', mediaUrl: msg.mediaKey || null, mimeType: msg.mimetype };
+      case 'video':
+        return { type: 'video', content: msg.body || '[Video]', mediaUrl: msg.mediaKey || null, mimeType: msg.mimetype };
+      case 'audio':
+      case 'ptt':
+        return { type: type === 'ptt' ? 'voice' : 'audio', content: '[Audio]', mediaUrl: msg.mediaKey || null, mimeType: msg.mimetype };
+      case 'document':
+        return { type: 'document', content: msg.body || msg.filename || '[Document]', mediaUrl: msg.mediaKey || null, mimeType: msg.mimetype, fileName: msg.filename };
+      case 'sticker':
+        return { type: 'sticker', content: '[Sticker]', mediaUrl: msg.mediaKey || null, mimeType: msg.mimetype };
+      case 'location':
+        return { type: 'location', content: `[Location: ${msg.location?.latitude}, ${msg.location?.longitude}]` };
+      case 'vcard':
+      case 'multi_vcard':
+        return { type: 'contact', content: `[Contact: ${msg.vCards?.[0] || msg.body || ''}]`.slice(0, 200) };
+      case 'revoked':
+        return { type: 'text', content: '[Message deleted]' };
+      default:
+        return { type: 'text', content: msg.body || `[${type}]` };
     }
-    if (message.extendedTextMessage) {
-      return { type: 'text', content: message.extendedTextMessage.text || '' };
-    }
-    if (message.imageMessage) {
-      return { type: 'image', content: message.imageMessage.caption || '[Image]', mediaUrl: message.imageMessage.url, mimeType: message.imageMessage.mimetype };
-    }
-    if (message.videoMessage) {
-      return { type: 'video', content: message.videoMessage.caption || '[Video]', mediaUrl: message.videoMessage.url, mimeType: message.videoMessage.mimetype };
-    }
-    if (message.audioMessage) {
-      return { type: message.audioMessage.ptt ? 'voice' : 'audio', content: '[Audio]', mediaUrl: message.audioMessage.url, mimeType: message.audioMessage.mimetype };
-    }
-    if (message.documentMessage) {
-      return { type: 'document', content: message.documentMessage.fileName || '[Document]', mediaUrl: message.documentMessage.url, mimeType: message.documentMessage.mimetype, fileName: message.documentMessage.fileName };
-    }
-    if (message.stickerMessage) {
-      return { type: 'sticker', content: '[Sticker]', mediaUrl: message.stickerMessage.url, mimeType: message.stickerMessage.mimetype };
-    }
-    if (message.locationMessage) {
-      return { type: 'location', content: `[Location: ${message.locationMessage.degreesLatitude}, ${message.locationMessage.degreesLongitude}]` };
-    }
-    if (message.contactMessage) {
-      return { type: 'contact', content: `[Contact: ${message.contactMessage.displayName || ''}]` };
-    }
-    if (message.reactionMessage) {
-      return { type: 'reaction', content: message.reactionMessage.text || '' };
-    }
-    return { type: 'text', content: '[Unsupported message]' };
   }
 
-  async _checkAutoReply(jid, content) {
+  async _checkAutoReply(chatId, content) {
     if (!content) return;
 
     const rules = await prisma.autoReply.findMany({
@@ -503,20 +561,21 @@ class WhatsAppBaileysAdapter extends BasePlatform {
     for (const rule of rules) {
       let matched = false;
       const trigger = rule.trigger.toLowerCase();
-      const msg = content.toLowerCase();
+      const msgLower = content.toLowerCase();
 
       switch (rule.matchType) {
-        case 'exact': matched = msg === trigger; break;
-        case 'contains': matched = msg.includes(trigger); break;
-        case 'startsWith': matched = msg.startsWith(trigger); break;
+        case 'exact': matched = msgLower === trigger; break;
+        case 'contains': matched = msgLower.includes(trigger); break;
+        case 'startsWith': matched = msgLower.startsWith(trigger); break;
         case 'regex':
           try { matched = new RegExp(rule.trigger, 'i').test(content); } catch { /* skip */ }
           break;
       }
 
       if (matched) {
-        await delay(1000); // Small delay to seem natural
-        await this.sendText(jid, rule.response);
+        // Small delay to seem natural
+        await new Promise(r => setTimeout(r, 1000 + Math.random() * 1000));
+        await this.sendText(chatId, rule.response);
         break; // Only first match
       }
     }
@@ -536,59 +595,62 @@ class WhatsAppBaileysAdapter extends BasePlatform {
       voiceMessages: true,
       stickers: true,
       qrLogin: true,
-      pairingCode: true,
+      pairingCode: false, // whatsapp-web.js doesn't support pairing code natively yet
     };
   }
 }
 
 // ==================== MODULE EXPORTS ====================
 
-/**
- * Get or create a Baileys adapter for a session
- */
 function getBaileysAdapter(session) {
   return new WhatsAppBaileysAdapter(session);
 }
 
-/**
- * Check if a session is currently connected
- */
 function isBaileysConnected(sessionId) {
-  const session = activeSessions.get(sessionId);
-  return !!(session?.sock?.user);
+  const sessionData = activeSessions.get(sessionId);
+  return !!(sessionData?.client?.info);
 }
 
-/**
- * Get all active Baileys sessions
- */
 function getActiveBaileysSessions() {
-  return Array.from(activeSessions.entries()).map(([id, { sock }]) => ({
+  return Array.from(activeSessions.entries()).map(([id, { client }]) => ({
     id,
-    connected: !!sock?.user,
-    phone: sock?.user?.id?.split(':')[0] || null,
-    name: sock?.user?.name || null,
+    connected: !!client?.info,
+    phone: client?.info?.wid?.user || null,
+    name: client?.info?.pushname || null,
   }));
 }
 
 /**
- * Reconnect all stored sessions on server startup
+ * Reconnect all stored WhatsApp sessions on server startup
  */
 async function reconnectAllBaileysSessions(io) {
   const sessions = await prisma.session.findMany({
     where: { platform: 'whatsapp', status: { not: 'disconnected' } },
   });
 
-  console.log(`[WhatsApp Baileys] Reconnecting ${sessions.length} sessions...`);
+  console.log(`[WhatsApp wwebjs] Reconnecting ${sessions.length} sessions...`);
 
   for (const session of sessions) {
-    if (fs.existsSync(path.join(SESSIONS_DIR, session.id, 'creds.json'))) {
+    // Check if LocalAuth data exists
+    const authDir = path.join(SESSIONS_DIR, `session-${session.id}`);
+    if (fs.existsSync(authDir)) {
       try {
         const adapter = new WhatsAppBaileysAdapter(session);
         await adapter.connect(io);
-        console.log(`[WhatsApp Baileys] Reconnecting session: ${session.name} (${session.id})`);
+        console.log(`[WhatsApp wwebjs] Reconnecting: ${session.name} (${session.id})`);
       } catch (err) {
-        console.error(`[WhatsApp Baileys] Failed to reconnect ${session.id}:`, err.message);
+        console.error(`[WhatsApp wwebjs] Failed to reconnect ${session.id}:`, err.message);
+        await prisma.session.update({
+          where: { id: session.id },
+          data: { status: 'disconnected' },
+        }).catch(() => {});
       }
+    } else {
+      // No saved session, mark as disconnected
+      await prisma.session.update({
+        where: { id: session.id },
+        data: { status: 'disconnected' },
+      }).catch(() => {});
     }
   }
 }
