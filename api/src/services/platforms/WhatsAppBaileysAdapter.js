@@ -209,10 +209,18 @@ class WhatsAppBaileysAdapter extends BasePlatform {
       }
     });
 
-    // Outgoing message (sent by us from phone)
+    // Outgoing message (sent by us from phone - NOT from API)
     client.on('message_create', async (msg) => {
       if (msg.fromMe) {
         try {
+          // Skip if this message was already saved by our API (sent via dashboard/API)
+          const msgId = msg.id?.id || msg.id?._serialized;
+          if (msgId) {
+            const existing = await prisma.message.findFirst({
+              where: { sessionId: this.sessionId, externalMsgId: msgId },
+            });
+            if (existing) return; // Already saved by sendText/sendMedia route
+          }
           await this._handleIncomingMessage(msg, io, true);
         } catch (err) {
           console.error(`[WhatsApp] Outgoing message handler error:`, err.message);
