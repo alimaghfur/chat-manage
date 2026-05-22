@@ -13,6 +13,7 @@ const { authMiddleware } = require('./middleware/auth');
 const { auditMiddleware } = require('./middleware/audit');
 const { errorHandler } = require('./middleware/errorHandler');
 const { initializeSocket } = require('./socket');
+const { reconnectAllSessions } = require('./services/platforms');
 
 // Routes
 const sessionRoutes = require('./routes/sessions');
@@ -50,8 +51,7 @@ app.use(cors({
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-
-// Make io and prisma available
+// Make io and prisma available to routes
 app.set('io', io);
 app.set('prisma', prisma);
 
@@ -61,7 +61,7 @@ setupSwagger(app);
 // Health (no auth)
 app.use('/api/health', healthRoutes);
 
-// Webhook receivers (NO auth - platforms need to access directly)
+// Webhook receiver (NO auth - platforms need direct access)
 app.use('/webhook', webhookReceiverRoutes);
 
 // API routes with auth
@@ -84,21 +84,33 @@ app.use(errorHandler);
 initializeSocket(io);
 
 const PORT = process.env.PORT || 3001;
-server.listen(PORT, process.env.HOST || '0.0.0.0', () => {
-  console.log(`🚀 Multi-Platform Chat Gateway running on http://localhost:${PORT}`);
-  console.log(`📖 Swagger docs: http://localhost:${PORT}/api-docs`);
-  console.log(`🔑 Master key required for /api/keys endpoints`);
-  console.log(`📡 Webhook receivers:`);
-  console.log(`   WhatsApp:  http://localhost:${PORT}/webhook/whatsapp`);
-  console.log(`   Telegram:  http://localhost:${PORT}/webhook/telegram/:botToken`);
-  console.log(`   Instagram: http://localhost:${PORT}/webhook/instagram`);
-  console.log(`   Messenger: http://localhost:${PORT}/webhook/messenger`);
-  console.log(`   Legacy:    http://localhost:${PORT}/webhook (auto-detect platform)`);
+server.listen(PORT, process.env.HOST || '0.0.0.0', async () => {
+  console.log('');
+  console.log('╔══════════════════════════════════════════════════╗');
+  console.log('║       MULTI-PLATFORM CHAT MANAGER v4.0          ║');
+  console.log('╠══════════════════════════════════════════════════╣');
+  console.log(`║  Server:    http://localhost:${PORT}                ║`);
+  console.log(`║  API Docs:  http://localhost:${PORT}/api-docs       ║`);
+  console.log(`║  Webhook:   http://localhost:${PORT}/webhook        ║`);
+  console.log('╠══════════════════════════════════════════════════╣');
+  console.log('║  Platforms: WhatsApp (QR/Pairing/API)           ║');
+  console.log('║             Telegram (Phone + OTP)              ║');
+  console.log('║             Instagram (Login)                   ║');
+  console.log('║             Messenger (Login/Cookies)           ║');
+  console.log('╚══════════════════════════════════════════════════╝');
+  console.log('');
+
+  // Reconnect all previously connected sessions
+  try {
+    await reconnectAllSessions(io);
+  } catch (err) {
+    console.error('Error reconnecting sessions:', err.message);
+  }
 });
 
 // Graceful shutdown
 process.on('SIGTERM', async () => {
-  console.log('Shutting down...');
+  console.log('Shutting down gracefully...');
   await prisma.$disconnect();
   server.close();
   process.exit(0);

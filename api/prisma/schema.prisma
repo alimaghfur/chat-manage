@@ -10,56 +10,61 @@ datasource db {
 // ==================== AUTH ====================
 
 model ApiKey {
-  id          String   @id @default(cuid())
-  name        String
-  key         String   @unique
-  permissions String   @default("*") // JSON array of permissions or "*" for all
-  cidrWhitelist String? // JSON array of allowed CIDRs, null = allow all
-  rateLimit   Int      @default(100) // requests per minute
-  isActive    Boolean  @default(true)
-  lastUsedAt  DateTime?
-  expiresAt   DateTime?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id            String   @id @default(cuid())
+  name          String
+  key           String   @unique
+  permissions   String   @default("*")
+  cidrWhitelist String?
+  rateLimit     Int      @default(100)
+  isActive      Boolean  @default(true)
+  lastUsedAt    DateTime?
+  expiresAt     DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
 
-  auditLogs   AuditLog[]
+  auditLogs     AuditLog[]
 }
 
 // ==================== SESSIONS (MULTI-PLATFORM) ====================
 
 model Session {
-  id          String   @id @default(cuid())
-  name        String
-  platform    String   @default("whatsapp") // whatsapp, telegram, instagram, messenger
-  phone       String?
-  status      String   @default("disconnected") // connected, disconnected, connecting
+  id              String   @id @default(cuid())
+  name            String
+  platform        String   @default("whatsapp") // whatsapp, whatsapp_api, telegram, instagram, messenger
+  connectionType  String   @default("qr") // qr, pairing_code, api_token, phone_otp, login
+  status          String   @default("disconnected") // disconnected, connecting, qr_ready, otp_required, connected
+  phone           String?
+  username        String?
+  avatar          String?
 
-  // === Platform Credentials (stored as JSON for flexibility) ===
-  // WhatsApp: { phoneNumberId, accessToken, waBusinessId }
-  // Telegram: { botToken, botUsername }
-  // Instagram: { accessToken, igUserId, pageId }
-  // Messenger: { pageAccessToken, pageId, appSecret }
-  credentials String?  // JSON - platform-specific credentials
+  // Connection credentials (JSON - platform-specific)
+  credentials     String?  // Encrypted JSON with platform creds
 
-  // Legacy WhatsApp fields (kept for backward compat, will be read from credentials)
-  phoneNumberId String?  // WhatsApp Business Phone Number ID
-  accessToken   String?  // Meta API access token / Telegram bot token
-  waBusinessId  String?  // WhatsApp Business Account ID
+  // WhatsApp API specific (legacy compat)
+  phoneNumberId   String?
+  accessToken     String?
+  waBusinessId    String?
 
-  webhookVerifyToken String? // Token for webhook verification
-  proxyUrl    String?  // per-session proxy
-  webhookUrl  String?  // per-session webhook override
-  metadata    String?  // JSON extra data
-  avatar      String?  // Platform avatar/profile picture URL
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  // QR/Auth state
+  qrCode          String?  // Current QR code data (base64 or text)
+  pairingCode     String?  // Current pairing code
 
-  contacts    Contact[]
-  messages    Message[]
-  groups      Group[]
-  labels      Label[]
-  autoReplies AutoReply[]
-  broadcasts  Broadcast[]
+  // Session storage path (for Baileys auth state, GramJS session, etc)
+  sessionPath     String?
+
+  webhookVerifyToken String?
+  webhookUrl      String?
+  metadata        String?  // JSON
+  lastSeen        DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  contacts        Contact[]
+  messages        Message[]
+  groups          Group[]
+  labels          Label[]
+  autoReplies     AutoReply[]
+  broadcasts      Broadcast[]
 }
 
 // ==================== CONTACTS ====================
@@ -67,14 +72,18 @@ model Session {
 model Contact {
   id          String   @id @default(cuid())
   sessionId   String
-  platformId  String   // Platform-specific identifier (jid, chat_id, ig_user_id, psid)
+  platformId  String   // Platform-specific ID (jid, chat_id, ig_user_id, psid)
   name        String?
   pushName    String?
   phone       String?
-  username    String?  // Telegram username, Instagram handle
+  username    String?
   avatar      String?
   isGroup     Boolean  @default(false)
-  metadata    String?  // JSON
+  isBlocked   Boolean  @default(false)
+  lastMessage String?  // Preview of last message
+  lastMsgTime DateTime?
+  unreadCount Int      @default(0)
+  metadata    String?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
@@ -84,6 +93,7 @@ model Contact {
   @@unique([sessionId, platformId])
   @@index([phone])
   @@index([username])
+  @@index([lastMsgTime])
 }
 
 // ==================== MESSAGES ====================
@@ -92,26 +102,33 @@ model Message {
   id            String   @id @default(cuid())
   sessionId     String
   contactId     String?
-  platformId    String   // Platform-specific chat/conversation ID
+  platformChatId String  // Platform-specific chat/conversation ID
+  senderName    String?
   content       String
-  type          String   @default("text") // text, image, video, document, audio, sticker, reaction, location, contact, template
+  type          String   @default("text") // text, image, video, document, audio, sticker, voice, location, contact, template, reaction
   mediaUrl      String?
-  mimeType      String?
-  fileName      String?
+  mediaMimeType String?
+  mediaFileName String?
+  mediaSize     Int?
+  thumbnailUrl  String?
   fromMe        Boolean  @default(false)
   status        String   @default("pending") // pending, sent, delivered, read, failed, received
   timestamp     DateTime @default(now())
-  externalMsgId String?  // Platform message ID (wa msg id, telegram msg id, etc)
-  quotedMsgId   String?  // reply to message
-  metadata      String?  // JSON (reactions, buttons, etc)
+  externalMsgId String?  // Platform message ID
+  quotedMsgId   String?  // Reply-to message ID
+  quotedContent String?  // Preview of quoted message
+  isForwarded   Boolean  @default(false)
+  isStarred     Boolean  @default(false)
+  metadata      String?  // JSON (buttons, reactions, etc)
   createdAt     DateTime @default(now())
 
-  session     Session  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
-  contact     Contact? @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  session       Session  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  contact       Contact? @relation(fields: [contactId], references: [id], onDelete: SetNull)
 
-  @@index([sessionId, platformId])
+  @@index([sessionId, platformChatId])
   @@index([timestamp])
   @@index([externalMsgId])
+  @@index([sessionId, timestamp])
 }
 
 // ==================== GROUPS ====================
@@ -119,13 +136,14 @@ model Message {
 model Group {
   id            String   @id @default(cuid())
   sessionId     String
-  platformId    String   // Platform-specific group ID
+  platformId    String
   name          String
   description   String?
   participants  String   // JSON array
   admins        String?  // JSON array
   owner         String?
   profilePic    String?
+  memberCount   Int      @default(0)
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
@@ -141,7 +159,7 @@ model Label {
   sessionId   String
   name        String
   color       String   @default("#25D366")
-  chatIds     String   @default("[]") // JSON array of platform IDs
+  chatIds     String   @default("[]")
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
@@ -157,6 +175,7 @@ model AutoReply {
   response    String
   isActive    Boolean  @default(true)
   matchType   String   @default("contains") // exact, contains, startsWith, regex
+  platforms   String   @default("*") // JSON array of platforms or "*" for all
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
@@ -171,12 +190,12 @@ model Broadcast {
   name        String
   message     String
   mediaUrl    String?
-  recipients  String   // JSON array of platform IDs
-  status      String   @default("pending") // pending, sending, completed, failed
+  recipients  String   // JSON array
+  status      String   @default("pending")
   sentCount   Int      @default(0)
   failCount   Int      @default(0)
   totalCount  Int      @default(0)
-  delay       Int      @default(2000) // delay between messages in ms
+  delay       Int      @default(2000)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
@@ -188,11 +207,11 @@ model Broadcast {
 model Webhook {
   id          String   @id @default(cuid())
   url         String
-  events      String   @default("*") // JSON array: ["message", "status", "connection"] or "*"
-  secret      String?  // HMAC secret for signature
+  events      String   @default("*")
+  secret      String?
   isActive    Boolean  @default(true)
   retries     Int      @default(3)
-  lastStatus  Int?     // last HTTP status code
+  lastStatus  Int?
   lastError   String?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
@@ -203,9 +222,9 @@ model Webhook {
 model AuditLog {
   id          String   @id @default(cuid())
   apiKeyId    String?
-  action      String   // e.g. "session.create", "message.send"
-  resource    String?  // e.g. "session:abc123"
-  details     String?  // JSON
+  action      String
+  resource    String?
+  details     String?
   ip          String?
   userAgent   String?
   statusCode  Int?

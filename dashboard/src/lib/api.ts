@@ -22,10 +22,7 @@ export async function fetchApi(endpoint: string, options: FetchOptions = {}, api
     headers['x-api-key'] = apiKey;
   }
 
-  const response = await fetch(url, {
-    ...fetchOptions,
-    headers,
-  });
+  const response = await fetch(url, { ...fetchOptions, headers });
 
   if (!response.ok) {
     const error = await response.json().catch(() => ({ message: response.statusText }));
@@ -44,17 +41,26 @@ export const platforms = {
 export const sessions = {
   list: (apiKey?: string, platform?: string) =>
     fetchApi('/sessions', { params: platform ? { platform } : undefined }, apiKey),
-  get: (id: string, apiKey?: string) => fetchApi(`/sessions/${id}`, {}, apiKey),
-  create: (data: { name: string; platform: string; credentials: Record<string, string> }, apiKey?: string) =>
+  get: (id: string, apiKey?: string) =>
+    fetchApi(`/sessions/${id}`, {}, apiKey),
+  create: (data: { name: string; platform: string; credentials?: Record<string, string> }, apiKey?: string) =>
     fetchApi('/sessions', { method: 'POST', body: JSON.stringify(data) }, apiKey),
-  connect: (id: string, apiKey?: string) =>
-    fetchApi(`/sessions/${id}/connect`, { method: 'POST' }, apiKey),
+  connect: (id: string, apiKey?: string, payload?: Record<string, unknown>) =>
+    fetchApi(`/sessions/${id}/connect`, { method: 'POST', body: JSON.stringify(payload || {}) }, apiKey),
+  verify: (id: string, apiKey?: string, payload?: { code: string; password?: string }) =>
+    fetchApi(`/sessions/${id}/verify`, { method: 'POST', body: JSON.stringify(payload || {}) }, apiKey),
+  sendPhone: (id: string, phoneNumber: string, apiKey?: string) =>
+    fetchApi(`/sessions/${id}/send-phone`, { method: 'POST', body: JSON.stringify({ phoneNumber }) }, apiKey),
   disconnect: (id: string, apiKey?: string) =>
     fetchApi(`/sessions/${id}/disconnect`, { method: 'POST' }, apiKey),
   delete: (id: string, apiKey?: string) =>
     fetchApi(`/sessions/${id}`, { method: 'DELETE' }, apiKey),
   status: (id: string, apiKey?: string) =>
     fetchApi(`/sessions/${id}/status`, {}, apiKey),
+  qr: (id: string, apiKey?: string) =>
+    fetchApi(`/sessions/${id}/qr`, {}, apiKey),
+  contacts: (id: string, apiKey?: string, params?: Record<string, string>) =>
+    fetchApi(`/sessions/${id}/contacts`, { params }, apiKey),
 };
 
 // Messages
@@ -67,26 +73,22 @@ export const messages = {
     fetchApi('/messages/template', { method: 'POST', body: JSON.stringify(data) }, apiKey),
   inbox: (apiKey?: string, params?: Record<string, string>) =>
     fetchApi('/messages/inbox', { params }, apiKey),
-  list: (sessionId: string, platformId: string, apiKey?: string) =>
-    fetchApi(`/messages/${sessionId}/${platformId}`, {}, apiKey),
+  conversations: (apiKey?: string, params?: Record<string, string>) =>
+    fetchApi('/messages/conversations', { params }, apiKey),
+  list: (sessionId: string, chatId: string, apiKey?: string) =>
+    fetchApi(`/messages/${sessionId}/${chatId}`, {}, apiKey),
+  starred: (apiKey?: string) =>
+    fetchApi('/messages/starred', {}, apiKey),
+  star: (id: string, apiKey?: string) =>
+    fetchApi(`/messages/star/${id}`, { method: 'POST' }, apiKey),
+  markRead: (data: { sessionId: string; to?: string; messageId?: string }, apiKey?: string) =>
+    fetchApi('/messages/read', { method: 'POST', body: JSON.stringify(data) }, apiKey),
 };
 
 // Contacts
 export const contacts = {
   list: (sessionId: string, apiKey?: string) =>
     fetchApi(`/contacts/${sessionId}`, {}, apiKey),
-};
-
-// Groups
-export const groups = {
-  list: (sessionId: string, apiKey?: string) =>
-    fetchApi(`/groups/${sessionId}`, {}, apiKey),
-};
-
-// Labels
-export const labels = {
-  list: (sessionId: string, apiKey?: string) =>
-    fetchApi(`/labels/${sessionId}`, {}, apiKey),
 };
 
 // Webhooks
@@ -98,26 +100,6 @@ export const webhooks = {
     fetchApi(`/webhooks/${id}`, { method: 'DELETE' }, apiKey),
   test: (id: string, apiKey?: string) =>
     fetchApi(`/webhooks/${id}/test`, { method: 'POST' }, apiKey),
-};
-
-// Broadcasts
-export const broadcasts = {
-  list: (sessionId: string, apiKey?: string) =>
-    fetchApi(`/broadcasts/${sessionId}`, {}, apiKey),
-  create: (data: { sessionId: string; name: string; recipients: string[]; message: string; delay?: number }, apiKey?: string) =>
-    fetchApi('/broadcasts', { method: 'POST', body: JSON.stringify(data) }, apiKey),
-};
-
-// Auto-Replies
-export const autoReplies = {
-  list: (sessionId: string, apiKey?: string) =>
-    fetchApi(`/auto-replies/${sessionId}`, {}, apiKey),
-  create: (data: { sessionId: string; trigger: string; response: string; matchType: string }, apiKey?: string) =>
-    fetchApi('/auto-replies', { method: 'POST', body: JSON.stringify(data) }, apiKey),
-  delete: (id: string, apiKey?: string) =>
-    fetchApi(`/auto-replies/${id}`, { method: 'DELETE' }, apiKey),
-  toggle: (id: string, apiKey?: string) =>
-    fetchApi(`/auto-replies/${id}/toggle`, { method: 'PATCH' }, apiKey),
 };
 
 // API Keys

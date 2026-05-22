@@ -1,140 +1,69 @@
 /**
- * Platform Registry - Central registry for all platform adapters
+ * Platform Registry - Central hub for all platform adapters
  * 
- * Usage:
- *   const { getPlatformAdapter } = require('./platforms');
- *   const adapter = await getPlatformAdapter(sessionId);
- *   await adapter.sendText('recipient', 'Hello!');
+ * Manages adapter instantiation, session lookup, and reconnection on startup.
  */
 
 const { PrismaClient } = require('@prisma/client');
-const WhatsAppAdapter = require('./WhatsAppAdapter');
-const TelegramAdapter = require('./TelegramAdapter');
-const InstagramAdapter = require('./InstagramAdapter');
-const MessengerAdapter = require('./MessengerAdapter');
+const { WhatsAppBaileysAdapter, getBaileysAdapter, reconnectAllBaileysSessions } = require('./WhatsAppBaileysAdapter');
+const { WhatsAppCloudAdapter } = require('./WhatsAppCloudAdapter');
+const { TelegramUserAdapter, reconnectAllTelegramSessions } = require('./TelegramUserAdapter');
+const { InstagramAdapter, reconnectAllInstagramSessions } = require('./InstagramAdapter');
+const { MessengerAdapter, reconnectAllMessengerSessions } = require('./MessengerAdapter');
 
 const prisma = new PrismaClient();
 
-// Platform adapter registry
-const PLATFORM_ADAPTERS = {
-  whatsapp: WhatsAppAdapter,
-  telegram: TelegramAdapter,
-  instagram: InstagramAdapter,
-  messenger: MessengerAdapter,
-};
-
 /**
- * Get a platform adapter instance for a given session
- * @param {string} sessionId - Session ID
- * @returns {Promise<BasePlatform>} Platform adapter instance
- */
-async function getPlatformAdapter(sessionId) {
-  const session = await prisma.session.findUnique({
-    where: { id: sessionId },
-  });
-
-  if (!session) {
-    throw Object.assign(new Error('Session not found'), { statusCode: 404 });
-  }
-
-  return createAdapterFromSession(session);
-}
-
-/**
- * Create a platform adapter from a session object (no DB query)
+ * Get the appropriate adapter for a session
  * @param {object} session - Session record from database
  * @returns {BasePlatform} Platform adapter instance
  */
-function createAdapterFromSession(session) {
-  const platform = session.platform || 'whatsapp';
-  const AdapterClass = PLATFORM_ADAPTERS[platform];
-
-  if (!AdapterClass) {
-    throw Object.assign(
-      new Error(`Unsupported platform: ${platform}. Supported: ${Object.keys(PLATFORM_ADAPTERS).join(', ')}`),
-      { statusCode: 400 }
-    );
-  }
-
-  return new AdapterClass(session);
-}
-
-/**
- * Get the adapter class for a platform (without instantiating)
- * @param {string} platform - Platform name
- * @returns {typeof BasePlatform}
- */
-function getAdapterClass(platform) {
-  const AdapterClass = PLATFORM_ADAPTERS[platform];
-  if (!AdapterClass) {
-    throw Object.assign(
-      new Error(`Unsupported platform: ${platform}`),
-      { statusCode: 400 }
-    );
-  }
-  return AdapterClass;
-}
-
-/**
- * Find the session matching an incoming webhook by platform and identifiers
- * @param {string} platform - Platform name
- * @param {object} identifiers - Platform-specific lookup fields
- * @returns {Promise<object|null>} Session or null
- */
-async function findSessionForWebhook(platform, identifiers) {
-  switch (platform) {
+function getAdapter(session) {
+  switch (session.platform) {
     case 'whatsapp':
-      if (identifiers.phoneNumberId) {
-        return prisma.session.findFirst({
-          where: { platform: 'whatsapp', phoneNumberId: identifiers.phoneNumberId },
-        });
-      }
-      break;
+      return new WhatsAppBaileysAdapter(session);
+    case 'whatsapp_api':
+      return new WhatsAppCloudAdapter(session);
     case 'telegram':
-      // Telegram webhooks include the bot token in the URL path
-      if (identifiers.botToken) {
-        return prisma.session.findFirst({
-          where: {
-            platform: 'telegram',
-            accessToken: identifiers.botToken,
-          },
-        });
-      }
-      break;
+      return new TelegramUserAdapter(session);
     case 'instagram':
-      if (identifiers.igUserId) {
-        // Look for igUserId in credentials JSON
-        const sessions = await prisma.session.findMany({
-          where: { platform: 'instagram' },
-        });
-        return sessions.find((s) => {
-          try {
-            const creds = JSON.parse(s.credentials || '{}');
-            return creds.igUserId === identifiers.igUserId;
-          } catch { return false; }
-        }) || null;
-      }
-      break;
+      return new InstagramAdapter(session);
     case 'messenger':
-      if (identifiers.pageId) {
-        const sessions = await prisma.session.findMany({
-          where: { platform: 'messenger' },
-        });
-        return sessions.find((s) => {
-          try {
-            const creds = JSON.parse(s.credentials || '{}');
-            return creds.pageId === identifiers.pageId;
-          } catch { return false; }
-        }) || null;
-      }
-      break;
+      return new MessengerAdapter(session);
+    default:
+      throw Object.assign(
+        new Error(`Unsupported platform: ${session.platform}`),
+        { statusCode: 400 }
+      );
   }
-  return null;
 }
 
 /**
- * Get list of supported platforms with their info
- * @returns {Array}
+ * Get adapter by session ID (fetches from DB)
+ * @param {string} sessionId
+ * @returns {Promise<BasePlatform>}
+ */
+async function getAdapterById(sessionId) {
+  const session = await prisma.session.findUnique({ where: { id: sessionId } });
+  if (!session) throw Object.assign(new Error('Session not found'), { statusCode: 404 });
+  return getAdapter(session);
+}
+
+/**
+ * Reconnect all stored sessions on server startup
+ * @param {object} io - Socket.IO instance
+ */
+async function reconnectAllSessions(io) {
+  console.log('\n========== RECONNECTING ALL SESSIONS ==========');
+  await reconnectAllBaileysSessions(io);
+  await reconnectAllTelegramSessions(io);
+  await reconnectAllInstagramSessions(io);
+  await reconnectAllMessengerSessions(io);
+  console.log('========== RECONNECTION COMPLETE ==========\n');
+}
+
+/**
+ * Get supported platforms with their UI metadata
  */
 function getSupportedPlatforms() {
   return [
@@ -143,55 +72,82 @@ function getSupportedPlatforms() {
       name: 'WhatsApp',
       icon: 'whatsapp',
       color: '#25D366',
-      description: 'WhatsApp Business Cloud API',
-      credentialFields: [
-        { key: 'phoneNumberId', label: 'Phone Number ID', required: true, type: 'text' },
-        { key: 'accessToken', label: 'Access Token', required: true, type: 'password' },
-        { key: 'waBusinessId', label: 'Business Account ID', required: false, type: 'text' },
+      description: 'Connect via QR code scan or pairing code (like WhatsApp Web)',
+      connectionType: 'qr',
+      authFields: [],
+      authOptions: [
+        { id: 'qr', label: 'Scan QR Code', description: 'Scan with your phone camera' },
+        { id: 'pairing_code', label: 'Pairing Code', description: 'Enter your phone number to get a code', fields: [
+          { key: 'phoneNumber', label: 'Phone Number', type: 'tel', placeholder: '+62812xxxxx', required: true },
+        ]},
       ],
+    },
+    {
+      id: 'whatsapp_api',
+      name: 'WhatsApp Business API',
+      icon: 'whatsapp',
+      color: '#128C7E',
+      description: 'Official Meta Cloud API (requires Business Account)',
+      connectionType: 'api_token',
+      authFields: [
+        { key: 'phoneNumberId', label: 'Phone Number ID', type: 'text', required: true, placeholder: '123456789012345' },
+        { key: 'accessToken', label: 'Access Token', type: 'password', required: true, placeholder: 'EAABx...' },
+        { key: 'waBusinessId', label: 'Business Account ID', type: 'text', required: false, placeholder: '987654321098765' },
+      ],
+      authOptions: [],
     },
     {
       id: 'telegram',
       name: 'Telegram',
       icon: 'telegram',
       color: '#0088CC',
-      description: 'Telegram Bot API',
-      credentialFields: [
-        { key: 'botToken', label: 'Bot Token', required: true, type: 'password', placeholder: '123456:ABC-DEF...' },
+      description: 'Connect your Telegram account via phone number + OTP',
+      connectionType: 'phone_otp',
+      authFields: [
+        { key: 'phoneNumber', label: 'Phone Number', type: 'tel', required: true, placeholder: '+62812xxxxx' },
       ],
+      authOptions: [],
+      notes: 'Requires TELEGRAM_API_ID and TELEGRAM_API_HASH in .env (get from my.telegram.org)',
     },
     {
       id: 'instagram',
       name: 'Instagram',
       icon: 'instagram',
       color: '#E4405F',
-      description: 'Instagram Messaging API (via Meta)',
-      credentialFields: [
-        { key: 'accessToken', label: 'Page Access Token', required: true, type: 'password' },
-        { key: 'igUserId', label: 'Instagram User ID', required: true, type: 'text' },
-        { key: 'pageId', label: 'Facebook Page ID', required: true, type: 'text' },
+      description: 'Connect your Instagram DMs via username + password',
+      connectionType: 'login',
+      authFields: [
+        { key: 'username', label: 'Username', type: 'text', required: true, placeholder: 'your_username' },
+        { key: 'password', label: 'Password', type: 'password', required: true },
       ],
+      authOptions: [],
+      notes: 'May require verification code if Instagram detects new login',
     },
     {
       id: 'messenger',
       name: 'Messenger',
       icon: 'messenger',
       color: '#0084FF',
-      description: 'Facebook Messenger Platform API',
-      credentialFields: [
-        { key: 'pageAccessToken', label: 'Page Access Token', required: true, type: 'password' },
-        { key: 'pageId', label: 'Page ID', required: true, type: 'text' },
-        { key: 'appSecret', label: 'App Secret', required: false, type: 'password' },
+      description: 'Connect Facebook Messenger via cookies or email + password',
+      connectionType: 'login',
+      authFields: [
+        { key: 'email', label: 'Email / Phone', type: 'text', required: false, placeholder: 'your@email.com' },
+        { key: 'password', label: 'Password', type: 'password', required: false },
       ],
+      authOptions: [
+        { id: 'credentials', label: 'Email + Password', description: 'Standard login (may be blocked by Facebook)' },
+        { id: 'cookies', label: 'Browser Cookies (Recommended)', description: 'Paste appState JSON from browser extension', fields: [
+          { key: 'appState', label: 'AppState JSON', type: 'textarea', required: true, placeholder: '[{"key":"c_user","value":"..."},...]' },
+        ]},
+      ],
+      notes: 'Cookie method is more reliable. Use c3c-ufc or similar extension to export cookies.',
     },
   ];
 }
 
 module.exports = {
-  getPlatformAdapter,
-  createAdapterFromSession,
-  getAdapterClass,
-  findSessionForWebhook,
+  getAdapter,
+  getAdapterById,
+  reconnectAllSessions,
   getSupportedPlatforms,
-  PLATFORM_ADAPTERS,
 };
